@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+
+MODE="ReleaseFast"
+
+for arg in "$@"; do
+	case "$arg" in
+		--test)
+			exec nix develop -c zig build test "-Doptimize=ReleaseFast"
+			;;
+		--debug)
+			MODE="Debug"
+			;;
+		*)
+			echo "Unknown argument: $arg" >&2
+			echo "Usage: ./build [--test] [--debug]" >&2
+			exit 1
+			;;
+	esac
+done
+
+exec nix develop -c zig build "-Doptimize=${MODE}"

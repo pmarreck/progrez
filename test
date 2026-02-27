@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+
+FAILURES=0
+
+echo "=== Unit tests (Zig) ==="
+if nix develop -c zig build test 2>&1; then
+	echo "PASS: unit tests"
+else
+	echo "FAIL: unit tests"
+	((FAILURES++))
+fi
+
+if [ "$FAILURES" -gt 0 ]; then
+	echo ""
+	echo "FAILED: $FAILURES suite(s)"
+	exit "$FAILURES"
+fi
+
+echo ""
+echo "ALL TESTS PASSED"
