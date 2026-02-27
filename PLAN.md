@@ -4,7 +4,7 @@ See `docs/plans/2026-02-27-progrez-implementation.md` for detailed plan.
 
 ## Status
 
-- [ ] Task 1: Project Scaffolding
+- [x] Task 1: Project Scaffolding (2026-02-27)
 - [ ] Task 2: Core Data Model
 - [ ] Task 3: Unit Formatting
 - [ ] Task 4: EMA Rate Calculation

@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 
 MODE="ReleaseFast"
+RUN_TESTS=0
 
 for arg in "$@"; do
 	case "$arg" in
 		--test)
-			exec nix develop -c zig build test "-Doptimize=ReleaseFast"
+			RUN_TESTS=1
 			;;
 		--debug)
 			MODE="Debug"
@@ -17,5 +18,9 @@ for arg in "$@"; do
 			;;
 	esac
 done
+
+if [ "$RUN_TESTS" -eq 1 ]; then
+	exec nix develop -c zig build test "-Doptimize=${MODE}"
+fi
 
 exec nix develop -c zig build "-Doptimize=${MODE}"

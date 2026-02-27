@@ -3,7 +3,7 @@
 FAILURES=0
 
 echo "=== Unit tests (Zig) ==="
-if nix develop -c zig build test 2>&1; then
+if nix develop -c zig build test; then
 	echo "PASS: unit tests"
 else
 	echo "FAIL: unit tests"
