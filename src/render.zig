@@ -646,6 +646,111 @@ pub fn renderCompletionSummary(state: *const core.ProgrezState, now_ns: i128, bu
     return buf[0..pos];
 }
 
+/// Render a plain-text log line for non-TTY output (piped stderr, CI).
+/// No ANSI escapes, no Unicode art. Ends with '\n'.
+///
+/// Format: `[progrez] {label} {stats}\n`
+///
+/// Stats (space-separated):
+///   - Percentage (if determinate): `25%` (integer)
+///   - File count: `100/400 files` (determinate) or `500 files` (indeterminate)
+///   - Byte count: `5.3 MB/21.0 MB` (determinate) or `2.0 MB` (indeterminate)
+///   - ETA (if available): `ETA 1:23`
+pub fn renderLogLine(state: *const core.ProgrezState, now_ns: i128, buf: []u8) []const u8 {
+    _ = now_ns;
+    if (buf.len == 0) return "";
+
+    var pos: usize = 0;
+
+    // --- 1. Write prefix ---
+    const prefix = "[progrez] ";
+    if (pos + prefix.len <= buf.len) {
+        @memcpy(buf[pos .. pos + prefix.len], prefix);
+        pos += prefix.len;
+    }
+
+    // --- 2. Write label ---
+    const label = state.getLabel();
+    if (label.len > 0 and pos + label.len <= buf.len) {
+        @memcpy(buf[pos .. pos + label.len], label);
+        pos += label.len;
+    }
+
+    // --- 3. Stats ---
+
+    // Percentage (determinate mode with known total, integer)
+    if (state.mode == .determinate) {
+        if (state.percentComplete()) |pct_frac| {
+            const pct_int: u64 = @intFromFloat(pct_frac * 100.0);
+            var pct_buf: [16]u8 = undefined;
+            const pct_str = std.fmt.bufPrint(&pct_buf, " {d}%", .{pct_int}) catch "";
+            if (pos + pct_str.len <= buf.len) {
+                @memcpy(buf[pos .. pos + pct_str.len], pct_str);
+                pos += pct_str.len;
+            }
+        }
+    }
+
+    // File count
+    if (state.files_processed > 0) {
+        var files_buf: [64]u8 = undefined;
+        var files_str: []const u8 = "";
+        if (state.files_total) |ft| {
+            files_str = std.fmt.bufPrint(&files_buf, " {d}/{d} files", .{ state.files_processed, ft }) catch "";
+        } else {
+            files_str = std.fmt.bufPrint(&files_buf, " {d} files", .{state.files_processed}) catch "";
+        }
+        if (pos + files_str.len <= buf.len) {
+            @memcpy(buf[pos .. pos + files_str.len], files_str);
+            pos += files_str.len;
+        }
+    }
+
+    // Byte count
+    if (state.bytes_processed > 0) {
+        var proc_buf: [32]u8 = undefined;
+        const proc_s = format.formatBytes(state.bytes_processed, &proc_buf);
+
+        if (state.bytes_total) |bt| {
+            var total_buf: [32]u8 = undefined;
+            const total_s = format.formatBytes(bt, &total_buf);
+            var bytes_buf: [80]u8 = undefined;
+            const bytes_str = std.fmt.bufPrint(&bytes_buf, " {s}/{s}", .{ proc_s, total_s }) catch "";
+            if (pos + bytes_str.len <= buf.len) {
+                @memcpy(buf[pos .. pos + bytes_str.len], bytes_str);
+                pos += bytes_str.len;
+            }
+        } else {
+            var bytes_buf: [48]u8 = undefined;
+            const bytes_str = std.fmt.bufPrint(&bytes_buf, " {s}", .{proc_s}) catch "";
+            if (pos + bytes_str.len <= buf.len) {
+                @memcpy(buf[pos .. pos + bytes_str.len], bytes_str);
+                pos += bytes_str.len;
+            }
+        }
+    }
+
+    // ETA (if available)
+    if (state.estimateEtaSeconds()) |eta_secs| {
+        var eta_buf: [32]u8 = undefined;
+        const eta_str = format.formatEta(eta_secs, &eta_buf);
+        if (pos + 1 + eta_str.len <= buf.len) {
+            buf[pos] = ' ';
+            pos += 1;
+            @memcpy(buf[pos .. pos + eta_str.len], eta_str);
+            pos += eta_str.len;
+        }
+    }
+
+    // --- 4. Trailing newline ---
+    if (pos < buf.len) {
+        buf[pos] = '\n';
+        pos += 1;
+    }
+
+    return buf[0..pos];
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────
 
 test "render: determinate bar at width 80 (unicode, no color)" {
@@ -901,6 +1006,41 @@ test "render: completion summary without identity" {
     try std.testing.expect(std.mem.indexOf(u8, line, "Compressing completed") != null);
     try std.testing.expect(std.mem.indexOf(u8, line, "23.45s") != null);
     try std.testing.expect(std.mem.endsWith(u8, line, "\n"));
+}
+
+test "render: log mode line (non-TTY)" {
+    var state = core.ProgrezState.init("Compressing");
+    state.setDeterminate(400, 21_000_000);
+    state.files_processed = 100;
+    state.bytes_processed = 5_300_000;
+    state.ema_bytes_per_sec = 500_000;
+    state.samples_count = 5;
+    state.start_time_ns = 0;
+
+    var buf: [256]u8 = undefined;
+    const line = renderLogLine(&state, 10_000_000_000, &buf);
+
+    // No ANSI escapes
+    try std.testing.expect(std.mem.indexOf(u8, line, "\x1b[") == null);
+    // Contains expected data
+    try std.testing.expect(std.mem.indexOf(u8, line, "[progrez]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "Compressing") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "25") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "100/400") != null);
+}
+
+test "render: log mode indeterminate" {
+    var state = core.ProgrezState.init("Scanning");
+    state.setIndeterminate();
+    state.files_processed = 500;
+    state.bytes_processed = 2_000_000;
+
+    var buf: [256]u8 = undefined;
+    const line = renderLogLine(&state, 5_000_000_000, &buf);
+
+    try std.testing.expect(std.mem.indexOf(u8, line, "[progrez]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "Scanning") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "500") != null);
 }
 
 test "render: completion summary bytes only (no files)" {
