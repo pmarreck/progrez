@@ -1,4 +1,4 @@
-//! Determinate progress bar rendering.
+//! Progress bar rendering: determinate and indeterminate modes.
 //! Pure logic: takes state + terminal caps, writes into caller-provided buffer.
 
 const std = @import("std");
@@ -200,6 +200,155 @@ pub fn renderDeterminate(state: *const core.ProgrezState, caps: terminal.Termina
             pos += 2;
             @memcpy(buf[pos .. pos + chosen_stats.len], chosen_stats);
             pos += chosen_stats.len;
+        }
+    }
+
+    return buf[0..pos];
+}
+
+// Braille spinner frames (Unicode): ⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏
+const braille_spinner = [10][]const u8{
+    "\xe2\xa0\x8b", // ⠋
+    "\xe2\xa0\x99", // ⠙
+    "\xe2\xa0\xb9", // ⠹
+    "\xe2\xa0\xb8", // ⠸
+    "\xe2\xa0\xbc", // ⠼
+    "\xe2\xa0\xb4", // ⠴
+    "\xe2\xa0\xa6", // ⠦
+    "\xe2\xa0\xa7", // ⠧
+    "\xe2\xa0\x87", // ⠇
+    "\xe2\xa0\x8f", // ⠏
+};
+
+const ascii_spinner = [4]u8{ '|', '/', '-', '\\' };
+
+/// Render a single-line indeterminate spinner into `buf`.
+/// Returns a slice of `buf` containing the rendered line.
+///
+/// Layout without guess:  `{label} {spinner} {count} files  {bytes}`
+/// Layout with guess:     `{label} {spinner} ~{pct}%  {count}/~{guess} files  {bytes}`
+pub fn renderIndeterminate(state: *const core.ProgrezState, caps: terminal.TerminalCaps, buf: []u8) []const u8 {
+    const width: usize = @intCast(caps.width);
+    if (width == 0 or buf.len == 0) return "";
+
+    var pos: usize = 0;
+
+    // --- 1. Write label ---
+    const label = state.getLabel();
+    if (label.len > 0 and pos + label.len < buf.len) {
+        @memcpy(buf[pos .. pos + label.len], label);
+        pos += label.len;
+    }
+
+    // Space after label
+    if (pos < buf.len) {
+        buf[pos] = ' ';
+        pos += 1;
+    }
+
+    // --- 2. Write spinner character ---
+    if (caps.unicode) {
+        const frame_idx = state.spinner_frame % braille_spinner.len;
+        const frame = braille_spinner[frame_idx];
+        if (pos + frame.len <= buf.len) {
+            @memcpy(buf[pos .. pos + frame.len], frame);
+            pos += frame.len;
+        }
+    } else {
+        const frame_idx = state.spinner_frame % ascii_spinner.len;
+        if (pos < buf.len) {
+            buf[pos] = ascii_spinner[frame_idx];
+            pos += 1;
+        }
+    }
+
+    // Space after spinner
+    if (pos < buf.len) {
+        buf[pos] = ' ';
+        pos += 1;
+    }
+
+    // --- 3. Build stats section ---
+    // If guess_total_files is set, compute approximate percentage
+    const has_guess_files = state.guess_total_files != null;
+    const has_guess_bytes = state.guess_total_bytes != null;
+    const has_guess = has_guess_files or has_guess_bytes;
+
+    // Approximate percentage (from guess)
+    var approx_pct_buf: [16]u8 = undefined;
+    var approx_pct_str: []const u8 = "";
+    if (has_guess) {
+        var frac: f64 = 0.0;
+        if (state.guess_total_bytes) |gb| {
+            if (gb > 0) {
+                frac = @as(f64, @floatFromInt(state.bytes_processed)) / @as(f64, @floatFromInt(gb));
+            }
+        } else if (state.guess_total_files) |gf| {
+            if (gf > 0) {
+                frac = @as(f64, @floatFromInt(state.files_processed)) / @as(f64, @floatFromInt(gf));
+            }
+        }
+        frac = @min(frac, 0.99); // Cap at 99% since it's a guess
+        const pct_int: u64 = @intFromFloat(frac * 100.0);
+        approx_pct_str = std.fmt.bufPrint(&approx_pct_buf, "~{d}%", .{pct_int}) catch "";
+    }
+
+    // File count
+    var files_buf: [64]u8 = undefined;
+    var files_str: []const u8 = "";
+    if (state.files_processed > 0) {
+        var count_buf: [32]u8 = undefined;
+        const count_str = format.formatCount(state.files_processed, &count_buf);
+
+        if (state.guess_total_files) |gf| {
+            var guess_count_buf: [32]u8 = undefined;
+            const guess_str = format.formatCount(gf, &guess_count_buf);
+            files_str = std.fmt.bufPrint(&files_buf, "{s}/~{s} files", .{ count_str, guess_str }) catch "";
+        } else {
+            files_str = std.fmt.bufPrint(&files_buf, "{s} files", .{count_str}) catch "";
+        }
+    }
+
+    // Byte count
+    var bytes_buf: [64]u8 = undefined;
+    var bytes_str: []const u8 = "";
+    if (state.bytes_processed > 0) {
+        var proc_buf: [32]u8 = undefined;
+        const proc_s = format.formatBytes(state.bytes_processed, &proc_buf);
+        bytes_str = std.fmt.bufPrint(&bytes_buf, "{s}", .{proc_s}) catch "";
+    }
+
+    // --- 4. Assemble stats into output buffer ---
+    // Stats parts in order: approx_pct, files, bytes
+    var stats_parts: [3][]const u8 = undefined;
+    var stats_count: usize = 0;
+
+    if (approx_pct_str.len > 0) {
+        stats_parts[stats_count] = approx_pct_str;
+        stats_count += 1;
+    }
+    if (files_str.len > 0) {
+        stats_parts[stats_count] = files_str;
+        stats_count += 1;
+    }
+    if (bytes_str.len > 0) {
+        stats_parts[stats_count] = bytes_str;
+        stats_count += 1;
+    }
+
+    // Write stats joined by "  " (2 spaces)
+    for (0..stats_count) |i| {
+        if (i > 0) {
+            if (pos + 2 <= buf.len) {
+                buf[pos] = ' ';
+                buf[pos + 1] = ' ';
+                pos += 2;
+            }
+        }
+        const part = stats_parts[i];
+        if (pos + part.len <= buf.len) {
+            @memcpy(buf[pos .. pos + part.len], part);
+            pos += part.len;
         }
     }
 
@@ -523,4 +672,75 @@ test "render: 100% progress" {
     const line = renderDeterminate(&state, caps, 5_000_000_000, &buf_arr);
 
     try std.testing.expect(std.mem.indexOf(u8, line, "100.0%") != null);
+}
+
+test "render: indeterminate spinner" {
+    var state = core.ProgrezState.init("Scanning");
+    state.setIndeterminate();
+    state.files_processed = 1247;
+    state.bytes_processed = 4_200_000;
+    state.spinner_frame = 0;
+
+    const caps = terminal.TerminalCaps{
+        .is_tty = true,
+        .unicode = true,
+        .truecolor = false,
+        .color_256 = false,
+        .color_16 = false,
+        .width = 80,
+    };
+
+    var buf: [512]u8 = undefined;
+    const line = renderIndeterminate(&state, caps, &buf);
+
+    try std.testing.expect(std.mem.indexOf(u8, line, "Scanning") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "1,247") != null);
+}
+
+test "render: indeterminate with guess shows approximate percent" {
+    var state = core.ProgrezState.init("Scanning");
+    state.setIndeterminate();
+    state.files_processed = 1247;
+    state.bytes_processed = 4_200_000;
+    state.guess_total_files = 2000;
+    state.spinner_frame = 3;
+
+    const caps = terminal.TerminalCaps{
+        .is_tty = true,
+        .unicode = true,
+        .truecolor = false,
+        .color_256 = false,
+        .color_16 = false,
+        .width = 80,
+    };
+
+    var buf: [512]u8 = undefined;
+    const line = renderIndeterminate(&state, caps, &buf);
+
+    // Should show approximate percentage
+    try std.testing.expect(std.mem.indexOf(u8, line, "~") != null);
+}
+
+test "render: indeterminate ASCII fallback" {
+    var state = core.ProgrezState.init("Scanning");
+    state.setIndeterminate();
+    state.files_processed = 100;
+    state.spinner_frame = 0;
+
+    const caps = terminal.TerminalCaps{
+        .is_tty = true,
+        .unicode = false,
+        .truecolor = false,
+        .color_256 = false,
+        .color_16 = false,
+        .width = 80,
+    };
+
+    var buf: [512]u8 = undefined;
+    const line = renderIndeterminate(&state, caps, &buf);
+
+    // ASCII spinner should be used (|, /, -, \)
+    try std.testing.expect(line.len > 0);
+    // No braille chars
+    try std.testing.expect(std.mem.indexOf(u8, line, "\xe2") == null); // No UTF-8 braille
 }
