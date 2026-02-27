@@ -10,6 +10,24 @@ else
 	((FAILURES++))
 fi
 
+echo ""
+echo "=== Building demo for CLI tests ==="
+if nix develop -c zig build 2>&1; then
+	echo "PASS: build"
+else
+	echo "FAIL: build"
+	((FAILURES++))
+fi
+
+echo ""
+echo "=== CLI integration tests ==="
+if bash tests/cli/test_cli.sh 2>&1; then
+	echo "PASS: CLI tests"
+else
+	echo "FAIL: CLI tests"
+	((FAILURES++))
+fi
+
 if [ "$FAILURES" -gt 0 ]; then
 	echo ""
 	echo "FAILED: $FAILURES suite(s)"

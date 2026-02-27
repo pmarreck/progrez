@@ -31,6 +31,29 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
 
+    // --- C demo executable ---
+    const demo = b.addExecutable(.{
+        .name = "progrez-demo",
+        .root_module = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    demo.root_module.addCSourceFile(.{
+        .file = b.path("examples/demo.c"),
+        .flags = &.{ "-std=c11", "-Wall", "-Wextra", "-Wpedantic" },
+    });
+    demo.root_module.addIncludePath(b.path("include"));
+    demo.linkLibrary(lib);
+    b.installArtifact(demo);
+
+    // Demo run step
+    const run_demo = b.addRunArtifact(demo);
+    run_demo.step.dependOn(b.getInstallStep());
+    const demo_step = b.step("demo", "Build and run the demo");
+    demo_step.dependOn(&run_demo.step);
+
     // --- Unit tests ---
     const unit_tests = b.addTest(.{
         .root_module = b.createModule(.{
