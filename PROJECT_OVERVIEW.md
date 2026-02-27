@@ -17,4 +17,48 @@ timer via a dedicated render thread.
 
 ## Architecture
 
-Pure Zig core (no I/O) → C FFI boundary (threading, terminal I/O) → Any consumer
+Pure Zig core (no I/O) -> C FFI boundary (threading, terminal I/O) -> Any consumer
+
+## Quick Start (C)
+
+```c
+#include "progrez.h"
+
+progrez_ctx *ctx = progrez_create("Processing");
+progrez_set_identity(ctx, "my-tool", "batch import of records/");
+progrez_set_determinate(ctx, num_files, total_bytes);
+
+for (uint64_t i = 0; i < num_files; i++) {
+    // do work
+    progrez_update(ctx, i + 1, bytes_done);
+}
+
+progrez_finish(ctx);
+progrez_destroy(ctx);
+```
+
+For indeterminate mode (unknown total):
+
+```c
+progrez_ctx *ctx = progrez_create("Scanning");
+progrez_set_indeterminate(ctx);
+progrez_set_guess(ctx, estimated_files, 0);  // optional guess
+
+while (scanning) {
+    progrez_update(ctx, files_found, bytes_seen);
+}
+
+// Switch to determinate once total is known:
+progrez_set_determinate(ctx, actual_total_files, actual_total_bytes);
+```
+
+## Environment Variable Overrides
+
+| Variable | Values | Effect |
+|---|---|---|
+| `PROGRESS` | `true`/`1`, `false`/`0` | Force progress on/off (overrides TTY detection) |
+| `PROGREZ_INTERVAL` | milliseconds (e.g. `500`) | Render interval (default: 1000ms) |
+| `PROGREZ_STYLE` | `ascii` | Force ASCII mode (no Unicode, no color) |
+| `NO_COLOR` | any value | Disable all color output (respects no-color.org convention) |
+
+Standard terminal variables (`COLORTERM`, `TERM`, `WT_SESSION`) are also read for capability detection.

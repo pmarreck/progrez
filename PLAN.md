@@ -14,9 +14,9 @@ See `docs/plans/2026-02-27-progrez-implementation.md` for detailed plan.
 - [x] Task 8: Completion Summary Rendering (2026-02-27)
 - [x] Task 9: Non-Interactive Log Mode (2026-02-27)
 - [x] Task 10: Render Dispatcher (2026-02-27)
-- [ ] Task 11: C FFI Layer
-- [ ] Task 12: C Header File
-- [ ] Task 13: Render Thread I/O Integration
-- [ ] Task 14: C Demo + CLI Tests
-- [ ] Task 15: Env Var Configuration
-- [ ] Task 16: Documentation and Final Polish
+- [x] Task 11: C FFI Layer (2026-02-27)
+- [x] Task 12: C Header File (2026-02-27)
+- [x] Task 13: Render Thread I/O Integration (2026-02-27)
+- [x] Task 14: C Demo + CLI Tests (2026-02-27)
+- [x] Task 15: Env Var Configuration (2026-02-27)
+- [x] Task 16: Documentation and Final Polish (2026-02-27)
