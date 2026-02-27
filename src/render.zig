@@ -520,6 +520,16 @@ fn writeColoredBlock(buf: []u8, start: usize, block: []const u8, cell_idx: usize
     return pos;
 }
 
+/// Top-level render dispatcher: selects the correct renderer based on mode.
+/// Returns a slice of `buf` containing the rendered line, or empty for idle.
+pub fn renderLine(state: *const core.ProgrezState, caps: terminal.TerminalCaps, now_ns: i128, buf: []u8) []const u8 {
+    return switch (state.mode) {
+        .idle => "",
+        .indeterminate => renderIndeterminate(state, caps, buf),
+        .determinate => renderDeterminate(state, caps, now_ns, buf),
+    };
+}
+
 /// Render a persistent completion summary line into `buf`.
 /// Returns a slice of `buf` containing the rendered line (ends with '\n').
 ///
@@ -1058,4 +1068,64 @@ test "render: completion summary bytes only (no files)" {
     try std.testing.expect(std.mem.indexOf(u8, line, "5.0 MB") != null);
     try std.testing.expect(std.mem.indexOf(u8, line, "files") == null);
     try std.testing.expect(std.mem.endsWith(u8, line, "\n"));
+}
+
+test "render: dispatch selects correct renderer for determinate" {
+    var state = core.ProgrezState.init("Test");
+    state.setDeterminate(100, 5000);
+    state.files_processed = 50;
+    state.bytes_processed = 2500;
+
+    const tty_caps = terminal.TerminalCaps{
+        .is_tty = true,
+        .unicode = true,
+        .truecolor = false,
+        .color_256 = false,
+        .color_16 = false,
+        .width = 80,
+    };
+
+    var buf: [2048]u8 = undefined;
+    const line = renderLine(&state, tty_caps, 1_000_000_000, &buf);
+    // Determinate mode should produce block chars
+    try std.testing.expect(std.mem.indexOf(u8, line, "\xe2\x96\x88") != null or
+        std.mem.indexOf(u8, line, "\xe2\x96\x91") != null);
+}
+
+test "render: dispatch selects indeterminate renderer" {
+    var state = core.ProgrezState.init("Scanning");
+    state.setIndeterminate();
+    state.files_processed = 100;
+    state.spinner_frame = 0;
+
+    const tty_caps = terminal.TerminalCaps{
+        .is_tty = true,
+        .unicode = true,
+        .truecolor = false,
+        .color_256 = false,
+        .color_16 = false,
+        .width = 80,
+    };
+
+    var buf: [512]u8 = undefined;
+    const line = renderLine(&state, tty_caps, 1_000_000_000, &buf);
+    // Indeterminate should have spinner or count
+    try std.testing.expect(std.mem.indexOf(u8, line, "Scanning") != null);
+}
+
+test "render: dispatch returns empty for idle" {
+    const state = core.ProgrezState.init("Idle");
+
+    const caps = terminal.TerminalCaps{
+        .is_tty = true,
+        .unicode = true,
+        .truecolor = false,
+        .color_256 = false,
+        .color_16 = false,
+        .width = 80,
+    };
+
+    var buf: [512]u8 = undefined;
+    const line = renderLine(&state, caps, 0, &buf);
+    try std.testing.expectEqual(@as(usize, 0), line.len);
 }
