@@ -149,6 +149,88 @@ pub const ProgrezState = struct {
             .timestamp_ns = now_ns,
         };
     }
+
+    /// Record a progress update and recalculate the EMA rate.
+    /// bytes_processed and files_processed are absolute (cumulative) values.
+    pub fn recordUpdate(self: *ProgrezState, bytes_processed: u64, files_processed: u64, now_ns: i128) void {
+        const delta_ns = now_ns - self.last_update_ns;
+        if (delta_ns > 0) {
+            const delta_secs = @as(f64, @floatFromInt(delta_ns)) / 1_000_000_000.0;
+
+            // Bytes rate
+            const bytes_delta: i128 = @as(i128, bytes_processed) - @as(i128, self.bytes_processed);
+            if (bytes_delta > 0) {
+                const instantaneous_bytes_rate = @as(f64, @floatFromInt(bytes_delta)) / delta_secs;
+                if (self.samples_count == 0) {
+                    // First sample: seed the EMA directly
+                    self.ema_bytes_per_sec = instantaneous_bytes_rate;
+                } else {
+                    self.ema_bytes_per_sec = self.ema_alpha * instantaneous_bytes_rate + (1.0 - self.ema_alpha) * self.ema_bytes_per_sec;
+                }
+            }
+
+            // Files rate
+            const files_delta: i128 = @as(i128, files_processed) - @as(i128, self.files_processed);
+            if (files_delta > 0) {
+                const instantaneous_files_rate = @as(f64, @floatFromInt(files_delta)) / delta_secs;
+                if (self.samples_count == 0) {
+                    self.ema_files_per_sec = instantaneous_files_rate;
+                } else {
+                    self.ema_files_per_sec = self.ema_alpha * instantaneous_files_rate + (1.0 - self.ema_alpha) * self.ema_files_per_sec;
+                }
+            }
+
+            self.samples_count += 1;
+        }
+
+        self.last_update_ns = now_ns;
+        self.bytes_processed = bytes_processed;
+        self.files_processed = files_processed;
+    }
+
+    /// Estimate time remaining in seconds based on EMA rate.
+    /// Returns null if not enough samples (<3), no total is known, or rate is zero.
+    pub fn estimateEtaSeconds(self: *const ProgrezState) ?f64 {
+        if (self.samples_count < 3) return null;
+
+        if (self.bytes_total) |total| {
+            if (self.ema_bytes_per_sec <= 0.0) return null;
+            const remaining = @as(f64, @floatFromInt(total)) - @as(f64, @floatFromInt(self.bytes_processed));
+            if (remaining <= 0.0) return 0.0;
+            return remaining / self.ema_bytes_per_sec;
+        }
+
+        if (self.files_total) |total| {
+            if (self.ema_files_per_sec <= 0.0) return null;
+            const remaining = @as(f64, @floatFromInt(total)) - @as(f64, @floatFromInt(self.files_processed));
+            if (remaining <= 0.0) return 0.0;
+            return remaining / self.ema_files_per_sec;
+        }
+
+        return null;
+    }
+
+    /// Calculate completion percentage as a value in [0.0, 1.0].
+    /// Returns null if no total is known.
+    pub fn percentComplete(self: *const ProgrezState) ?f64 {
+        if (self.bytes_total) |total| {
+            if (total > 0) {
+                return @as(f64, @floatFromInt(self.bytes_processed)) / @as(f64, @floatFromInt(total));
+            }
+        }
+        if (self.files_total) |total| {
+            if (total > 0) {
+                return @as(f64, @floatFromInt(self.files_processed)) / @as(f64, @floatFromInt(total));
+            }
+        }
+        return null;
+    }
+
+    /// Calculate elapsed time in seconds from start_time_ns to now_ns.
+    pub fn elapsedSeconds(self: *const ProgrezState, now_ns: i128) f64 {
+        const elapsed_ns = now_ns - self.start_time_ns;
+        return @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000_000.0;
+    }
 };
 
 // ── Tests ──────────────────────────────────────────────────────────────
@@ -225,4 +307,83 @@ test "core: set guess" {
     state.setGuess(2000, 0);
     try std.testing.expectEqual(@as(?u64, 2000), state.guess_total_files);
     try std.testing.expectEqual(@as(?u64, null), state.guess_total_bytes);
+}
+
+test "core: EMA rate calculation with constant rate" {
+    var state = ProgrezState.init("Test");
+    state.setDeterminate(0, 10_000);
+    state.start_time_ns = 0;
+
+    // Simulate 10 updates at constant rate: 1000 bytes/sec
+    var time_ns: i128 = 0;
+    var bytes: u64 = 0;
+    for (0..10) |_| {
+        time_ns += 1_000_000_000; // 1 second
+        bytes += 1000;
+        state.recordUpdate(bytes, 0, time_ns);
+    }
+
+    // EMA should converge near 1000 bytes/sec
+    try std.testing.expect(state.ema_bytes_per_sec > 900.0);
+    try std.testing.expect(state.ema_bytes_per_sec < 1100.0);
+}
+
+test "core: EMA suppressed until minimum samples" {
+    var state = ProgrezState.init("Test");
+    state.setDeterminate(0, 10_000);
+    state.start_time_ns = 0;
+
+    // First update — not enough samples for ETA
+    state.recordUpdate(100, 0, 1_000_000_000);
+    try std.testing.expectEqual(@as(u32, 1), state.samples_count);
+    try std.testing.expectEqual(@as(?f64, null), state.estimateEtaSeconds());
+
+    // Second update
+    state.recordUpdate(200, 0, 2_000_000_000);
+    try std.testing.expectEqual(@as(?f64, null), state.estimateEtaSeconds());
+
+    // Third update — now ETA available
+    state.recordUpdate(300, 0, 3_000_000_000);
+    try std.testing.expect(state.estimateEtaSeconds() != null);
+}
+
+test "core: ETA calculation" {
+    var state = ProgrezState.init("Test");
+    state.setDeterminate(0, 10_000);
+    state.start_time_ns = 0;
+
+    // 3 updates at 1000 bytes/sec
+    state.recordUpdate(1000, 0, 1_000_000_000);
+    state.recordUpdate(2000, 0, 2_000_000_000);
+    state.recordUpdate(3000, 0, 3_000_000_000);
+
+    // 7000 bytes remaining at ~1000 bytes/sec ≈ 7 seconds
+    const eta = state.estimateEtaSeconds().?;
+    try std.testing.expect(eta > 5.0);
+    try std.testing.expect(eta < 10.0);
+}
+
+test "core: percentage calculation" {
+    var state = ProgrezState.init("Test");
+    state.setDeterminate(0, 1000);
+    state.bytes_processed = 500;
+    try std.testing.expect(@abs(state.percentComplete().? - 0.5) < 0.001);
+
+    state.bytes_processed = 0;
+    try std.testing.expect(@abs(state.percentComplete().? - 0.0) < 0.001);
+
+    state.bytes_processed = 1000;
+    try std.testing.expect(@abs(state.percentComplete().? - 1.0) < 0.001);
+}
+
+test "core: percentage null when no total" {
+    var state = ProgrezState.init("Test");
+    state.setIndeterminate();
+    try std.testing.expectEqual(@as(?f64, null), state.percentComplete());
+}
+
+test "core: elapsed seconds" {
+    var state = ProgrezState.init("Test");
+    state.start_time_ns = 0;
+    try std.testing.expect(@abs(state.elapsedSeconds(2_500_000_000) - 2.5) < 0.001);
 }
