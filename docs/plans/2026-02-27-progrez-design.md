@@ -68,6 +68,12 @@ spinner_frame: u8          # cycles through braille spinner chars
 # Display label
 label: [128]u8             # e.g. "Scanning", "Compressing"
 label_len: u8
+
+# Caller identity (optional, for completion summaries & future notifications)
+caller_name: [64]u8        # e.g. "bzip2z", "z7z" — the tool using progrez
+caller_name_len: u8
+context_name: [256]u8      # e.g. "compression of mydir/", "extraction of archive.7z"
+context_name_len: u16
 ```
 
 ### ProgrezSnapshot (atomically swapped between threads)
@@ -90,6 +96,11 @@ typedef struct progrez_ctx progrez_ctx;
 // Lifecycle
 progrez_ctx* progrez_create(const char* label);
 void         progrez_destroy(progrez_ctx* ctx);
+
+// Optional caller identity (for completion summaries & future notifications)
+void progrez_set_identity(progrez_ctx* ctx,
+                          const char* caller_name,   // e.g. "bzip2z"
+                          const char* context_name); // e.g. "compression of mydir/"
 
 // Mode setup (call one or both, in order)
 void progrez_set_indeterminate(progrez_ctx* ctx);
@@ -164,9 +175,21 @@ Scanning ⣾ [⡀⡄⡆⡇⣇⣧⣷⣿····] ~62%  1,247/~2,000 files  4.2 MB
 Compressing [============>           ] 58.3%  234/400 files  ETA 0:42
 ```
 
-### Cleanup on finish
+### Completion summary
 
-`\r` + spaces (terminal width) + `\r` — progress bar disappears cleanly from terminal, leaves no scrollback trace.
+On `progrez_finish()`, the progress bar is replaced with a one-line completion summary. If caller identity was set via `progrez_set_identity()`:
+
+```
+bzip2z completed: compression of mydir/ in 23.45s (400 files, 21.1 MB)
+```
+
+If no identity was set, falls back to the label:
+
+```
+Compressing completed in 23.45s (400 files, 21.1 MB)
+```
+
+The summary is written once and left in the terminal scrollback (unlike the progress bar itself which overwrites in place). After the summary, the line is finalized with `\n` so subsequent output appears cleanly below it.
 
 ## ETA Calculation
 
@@ -260,3 +283,4 @@ progrez/
 - Kitty graphics protocol support (animated textures for progress)
 - Windowed linear regression for ETA (captures acceleration trends)
 - i18n for progress labels
+- Completion notifications via system mechanisms (macOS notifications, libnotify, etc.) using caller identity
