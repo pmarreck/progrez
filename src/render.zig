@@ -520,6 +520,132 @@ fn writeColoredBlock(buf: []u8, start: usize, block: []const u8, cell_idx: usize
     return pos;
 }
 
+/// Render a persistent completion summary line into `buf`.
+/// Returns a slice of `buf` containing the rendered line (ends with '\n').
+///
+/// Format with identity:  `{caller_name} completed: {context_name} in {elapsed} ({details})\n`
+/// Format without identity: `{label} completed in {elapsed} ({details})\n`
+///
+/// Details (parenthesized):
+///   - If files_processed > 0: "{count} files"
+///   - If bytes_processed > 0: "{bytes}"
+///   - Separated with ", " if both present
+pub fn renderCompletionSummary(state: *const core.ProgrezState, now_ns: i128, buf: []u8) []const u8 {
+    if (buf.len == 0) return "";
+
+    var pos: usize = 0;
+
+    // --- 1. Write prefix: identity or label ---
+    if (state.getCallerName()) |caller_name| {
+        // "{caller_name} completed: {context_name} in "
+        if (pos + caller_name.len <= buf.len) {
+            @memcpy(buf[pos .. pos + caller_name.len], caller_name);
+            pos += caller_name.len;
+        }
+        const completed_str = " completed: ";
+        if (pos + completed_str.len <= buf.len) {
+            @memcpy(buf[pos .. pos + completed_str.len], completed_str);
+            pos += completed_str.len;
+        }
+        if (state.getContextName()) |context_name| {
+            if (pos + context_name.len <= buf.len) {
+                @memcpy(buf[pos .. pos + context_name.len], context_name);
+                pos += context_name.len;
+            }
+        }
+        const in_str = " in ";
+        if (pos + in_str.len <= buf.len) {
+            @memcpy(buf[pos .. pos + in_str.len], in_str);
+            pos += in_str.len;
+        }
+    } else {
+        // "{label} completed in "
+        const label = state.getLabel();
+        if (pos + label.len <= buf.len) {
+            @memcpy(buf[pos .. pos + label.len], label);
+            pos += label.len;
+        }
+        const completed_in_str = " completed in ";
+        if (pos + completed_in_str.len <= buf.len) {
+            @memcpy(buf[pos .. pos + completed_in_str.len], completed_in_str);
+            pos += completed_in_str.len;
+        }
+    }
+
+    // --- 2. Write elapsed time ---
+    const elapsed_secs = state.elapsedSeconds(now_ns);
+    var elapsed_buf: [32]u8 = undefined;
+    const elapsed_str = format.formatElapsed(elapsed_secs, &elapsed_buf);
+    if (pos + elapsed_str.len <= buf.len) {
+        @memcpy(buf[pos .. pos + elapsed_str.len], elapsed_str);
+        pos += elapsed_str.len;
+    }
+
+    // --- 3. Build details (files, bytes) ---
+    var has_details = false;
+
+    // Files
+    var files_detail_buf: [64]u8 = undefined;
+    var files_detail: []const u8 = "";
+    if (state.files_processed > 0) {
+        var count_buf: [32]u8 = undefined;
+        const count_str = format.formatCount(state.files_processed, &count_buf);
+        files_detail = std.fmt.bufPrint(&files_detail_buf, "{s} files", .{count_str}) catch "";
+        if (files_detail.len > 0) has_details = true;
+    }
+
+    // Bytes
+    var bytes_detail_buf: [32]u8 = undefined;
+    var bytes_detail: []const u8 = "";
+    if (state.bytes_processed > 0) {
+        bytes_detail = format.formatBytes(state.bytes_processed, &bytes_detail_buf);
+        if (bytes_detail.len > 0) has_details = true;
+    }
+
+    // --- 4. Write details in parentheses ---
+    if (has_details) {
+        if (pos + 2 <= buf.len) {
+            buf[pos] = ' ';
+            buf[pos + 1] = '(';
+            pos += 2;
+        }
+
+        if (files_detail.len > 0) {
+            if (pos + files_detail.len <= buf.len) {
+                @memcpy(buf[pos .. pos + files_detail.len], files_detail);
+                pos += files_detail.len;
+            }
+            if (bytes_detail.len > 0) {
+                if (pos + 2 <= buf.len) {
+                    buf[pos] = ',';
+                    buf[pos + 1] = ' ';
+                    pos += 2;
+                }
+            }
+        }
+
+        if (bytes_detail.len > 0) {
+            if (pos + bytes_detail.len <= buf.len) {
+                @memcpy(buf[pos .. pos + bytes_detail.len], bytes_detail);
+                pos += bytes_detail.len;
+            }
+        }
+
+        if (pos < buf.len) {
+            buf[pos] = ')';
+            pos += 1;
+        }
+    }
+
+    // --- 5. Trailing newline ---
+    if (pos < buf.len) {
+        buf[pos] = '\n';
+        pos += 1;
+    }
+
+    return buf[0..pos];
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────
 
 test "render: determinate bar at width 80 (unicode, no color)" {
@@ -743,4 +869,53 @@ test "render: indeterminate ASCII fallback" {
     try std.testing.expect(line.len > 0);
     // No braille chars
     try std.testing.expect(std.mem.indexOf(u8, line, "\xe2") == null); // No UTF-8 braille
+}
+
+test "render: completion summary with identity" {
+    var state = core.ProgrezState.init("Compressing");
+    state.setDeterminate(400, 21_000_000);
+    state.files_processed = 400;
+    state.bytes_processed = 21_000_000;
+    state.start_time_ns = 0;
+    state.setIdentity("bzip2z", "compression of mydir/");
+
+    var buf: [512]u8 = undefined;
+    const line = renderCompletionSummary(&state, 23_450_000_000, &buf);
+
+    try std.testing.expect(std.mem.indexOf(u8, line, "bzip2z completed: compression of mydir/") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "23.45s") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "400") != null);
+    try std.testing.expect(std.mem.endsWith(u8, line, "\n"));
+}
+
+test "render: completion summary without identity" {
+    var state = core.ProgrezState.init("Compressing");
+    state.setDeterminate(400, 21_000_000);
+    state.files_processed = 400;
+    state.bytes_processed = 21_000_000;
+    state.start_time_ns = 0;
+
+    var buf: [512]u8 = undefined;
+    const line = renderCompletionSummary(&state, 23_450_000_000, &buf);
+
+    try std.testing.expect(std.mem.indexOf(u8, line, "Compressing completed") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "23.45s") != null);
+    try std.testing.expect(std.mem.endsWith(u8, line, "\n"));
+}
+
+test "render: completion summary bytes only (no files)" {
+    var state = core.ProgrezState.init("Processing");
+    state.setDeterminate(0, 5_000_000); // 0 files = not tracking
+    state.bytes_processed = 5_000_000;
+    state.start_time_ns = 0;
+
+    var buf: [512]u8 = undefined;
+    const line = renderCompletionSummary(&state, 10_000_000_000, &buf);
+
+    try std.testing.expect(std.mem.indexOf(u8, line, "Processing completed") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "10.00s") != null);
+    // Should have bytes but not "files"
+    try std.testing.expect(std.mem.indexOf(u8, line, "5.0 MB") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "files") == null);
+    try std.testing.expect(std.mem.endsWith(u8, line, "\n"));
 }
