@@ -8,7 +8,7 @@ Decouples data reporting from display rendering: callers provide data points
 at arbitrary rates, and the library renders independently on a configurable
 timer via a dedicated render thread.
 
-[![asciicast](https://asciinema.org/a/803959.svg)](https://asciinema.org/a/803959)
+[![asciicast](https://asciinema.org/a/803959.png)](https://asciinema.org/a/803959)
 
 ## Key concepts
 
