@@ -83,9 +83,15 @@ pub fn renderDeterminate(state: *const core.ProgrezState, caps: terminal.Termina
         eta_str = format.formatEta(eta_secs, &eta_buf);
     }
 
+    var throughput_buf: [32]u8 = undefined;
+    var throughput_str: []const u8 = "";
+    if (state.ema_bytes_per_sec > 0.0 and state.samples_count >= 3) {
+        throughput_str = format.formatThroughput(state.ema_bytes_per_sec, &throughput_buf);
+    }
+
     // --- 2. Build stats string with priority dropping ---
     // Stat pieces in priority order (lowest priority = dropped first):
-    //   eta, bytes, files, pct
+    //   eta, throughput, bytes, files, pct
     // We try fitting all, then progressively drop from the end (lowest priority).
 
     const label = state.getLabel();
@@ -98,8 +104,8 @@ pub fn renderDeterminate(state: *const core.ProgrezState, caps: terminal.Termina
     const label_len = label.len;
 
     // Try all 5 stat levels (4 stats -> 0 stats)
-    const StatLevel = enum { all, no_eta, no_bytes, no_files, none };
-    const levels = [_]StatLevel{ .all, .no_eta, .no_bytes, .no_files, .none };
+    const StatLevel = enum { all, no_eta, no_throughput, no_bytes, no_files, none };
+    const levels = [_]StatLevel{ .all, .no_eta, .no_throughput, .no_bytes, .no_files, .none };
 
     var chosen_stats_buf: [256]u8 = undefined;
     var chosen_stats: []const u8 = "";
@@ -107,7 +113,7 @@ pub fn renderDeterminate(state: *const core.ProgrezState, caps: terminal.Termina
 
     for (levels) |level| {
         // Build stats string for this level
-        var stats_parts: [4][]const u8 = undefined;
+        var stats_parts: [5][]const u8 = undefined;
         var stats_count: usize = 0;
 
         // Always include pct unless level == .none
@@ -115,15 +121,21 @@ pub fn renderDeterminate(state: *const core.ProgrezState, caps: terminal.Termina
             stats_parts[stats_count] = pct_str;
             stats_count += 1;
         }
-        if (level == .all or level == .no_eta or level == .no_bytes) {
+        if (level == .all or level == .no_eta or level == .no_throughput or level == .no_bytes) {
             if (files_str.len > 0) {
                 stats_parts[stats_count] = files_str;
                 stats_count += 1;
             }
         }
-        if (level == .all or level == .no_eta) {
+        if (level == .all or level == .no_eta or level == .no_throughput) {
             if (bytes_str.len > 0) {
                 stats_parts[stats_count] = bytes_str;
+                stats_count += 1;
+            }
+        }
+        if (level == .all or level == .no_eta) {
+            if (throughput_str.len > 0) {
+                stats_parts[stats_count] = throughput_str;
                 stats_count += 1;
             }
         }
@@ -811,6 +823,18 @@ pub fn renderLogLine(state: *const core.ProgrezState, now_ns: i128, buf: []u8) [
         }
     }
 
+    // Throughput
+    if (state.ema_bytes_per_sec > 0.0 and state.samples_count >= 3) {
+        var tp_buf: [32]u8 = undefined;
+        const tp_str = format.formatThroughput(state.ema_bytes_per_sec, &tp_buf);
+        if (pos + 1 + tp_str.len <= buf.len) {
+            buf[pos] = ' ';
+            pos += 1;
+            @memcpy(buf[pos .. pos + tp_str.len], tp_str);
+            pos += tp_str.len;
+        }
+    }
+
     // ETA (if available)
     if (state.estimateEtaSeconds()) |eta_secs| {
         var eta_buf: [32]u8 = undefined;
@@ -1182,6 +1206,32 @@ test "render: dispatch selects indeterminate renderer" {
     const line = renderLine(&state, tty_caps, 1_000_000_000, &buf, GradientColors.default);
     // Indeterminate should have spinner or count
     try std.testing.expect(std.mem.indexOf(u8, line, "Scanning") != null);
+}
+
+test "render: determinate bar shows throughput" {
+    var state = core.ProgrezState.init("Test");
+    state.setDeterminate(100, 10_000);
+    state.files_processed = 50;
+    state.bytes_processed = 5000;
+    state.ema_bytes_per_sec = 1_500_000;
+    state.samples_count = 5;
+    state.start_time_ns = 0;
+
+    const caps = terminal.TerminalCaps{
+        .is_tty = true,
+        .unicode = true,
+        .truecolor = false,
+        .color_256 = false,
+        .color_16 = false,
+        .width = 120,
+    };
+
+    var buf_arr: [2048]u8 = undefined;
+    const line = renderDeterminate(&state, caps, 5_000_000_000, &buf_arr, GradientColors.default);
+
+    // Should contain throughput
+    try std.testing.expect(std.mem.indexOf(u8, line, "MB/s") != null or
+        std.mem.indexOf(u8, line, "KB/s") != null);
 }
 
 test "render: dispatch returns empty for idle" {
