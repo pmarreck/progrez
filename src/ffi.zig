@@ -7,6 +7,8 @@ const builtin = @import("builtin");
 const core = @import("core.zig");
 const terminal = @import("terminal.zig");
 const render = @import("render.zig");
+const GradientColors = render.GradientColors;
+const Color = render.Color;
 
 fn ffiAllocator() std.mem.Allocator {
     return std.heap.c_allocator;
@@ -26,6 +28,8 @@ const FfiContext = struct {
     // Config
     progress_enabled: bool,
     is_tty: bool,
+    // Gradient colors for the progress bar
+    gradient: GradientColors,
     // Log mode tracking (non-TTY output)
     last_log_percent: i8, // -1 = no log yet
     last_log_time_ns: i128,
@@ -45,6 +49,41 @@ fn parseProgressEnv(val: ?[]const u8) ?bool {
 fn parseIntervalEnv(val: ?[]const u8) u32 {
     const v = val orelse return 100;
     return std.fmt.parseInt(u32, v, 10) catch 100;
+}
+
+/// Parse a 6-digit hex color (e.g. "FF00FF") into a Color. Returns null on invalid input.
+fn parseHexColor(hex: []const u8) ?Color {
+    if (hex.len != 6) return null;
+    const r = std.fmt.parseInt(u8, hex[0..2], 16) catch return null;
+    const g = std.fmt.parseInt(u8, hex[2..4], 16) catch return null;
+    const b = std.fmt.parseInt(u8, hex[4..6], 16) catch return null;
+    return .{ .r = r, .g = g, .b = b };
+}
+
+/// Parse PROGREZ_GRADIENT env var. Format: "RRGGBB,RRGGBB" (2-stop) or "RRGGBB,RRGGBB,RRGGBB" (3-stop).
+/// Returns null if not set or invalid.
+fn parseGradientEnv(val: ?[]const u8) ?GradientColors {
+    const v = val orelse return null;
+    // Find first comma
+    const comma1 = std.mem.indexOfScalar(u8, v, ',') orelse return null;
+    const first = v[0..comma1];
+    const rest = v[comma1 + 1 ..];
+
+    // Check for second comma
+    if (std.mem.indexOfScalar(u8, rest, ',')) |comma2| {
+        // 3-stop: start,mid,end
+        const second = rest[0..comma2];
+        const third = rest[comma2 + 1 ..];
+        const c1 = parseHexColor(first) orelse return null;
+        const c2 = parseHexColor(second) orelse return null;
+        const c3 = parseHexColor(third) orelse return null;
+        return .{ .start = c1, .mid = c2, .end = c3 };
+    } else {
+        // 2-stop: start,end
+        const c1 = parseHexColor(first) orelse return null;
+        const c2 = parseHexColor(rest) orelse return null;
+        return .{ .start = c1, .mid = null, .end = c2 };
+    }
 }
 
 /// Read an environment variable. Returns null if not set.
@@ -130,7 +169,7 @@ fn renderLoop(ctx: *FfiContext) void {
             ctx.state.spinner_frame +%= 1;
 
             // Render the progress line
-            const line = render.renderLine(&ctx.state, ctx.caps, now_ns, &render_buf);
+            const line = render.renderLine(&ctx.state, ctx.caps, now_ns, &render_buf, ctx.gradient);
             if (line.len > 0) {
                 const stderr_file: std.fs.File = .{ .handle = 2 };
                 // Overwrite previous line with \r
@@ -181,6 +220,8 @@ export fn progrez_create(label: ?[*:0]const u8) ?*FfiContext {
     const wt_session_env = getEnvVar("WT_SESSION");
 
     const interval_ms = parseIntervalEnv(if (interval_env) |e| @as([]const u8, e) else null);
+    const gradient_env = getEnvVar("PROGREZ_GRADIENT");
+    const gradient = parseGradientEnv(if (gradient_env) |e| @as([]const u8, e) else null) orelse GradientColors.default;
 
     // Detect TTY on stderr (fd 2)
     const is_tty = std.posix.isatty(2);
@@ -226,6 +267,7 @@ export fn progrez_create(label: ?[*:0]const u8) ?*FfiContext {
         .generation = std.atomic.Value(u32).init(0),
         .progress_enabled = progress_enabled,
         .is_tty = is_tty,
+        .gradient = gradient,
         .last_log_percent = -1,
         .last_log_time_ns = now_ns,
     };
@@ -339,6 +381,50 @@ export fn progrez_set_interval_ms(ctx: ?*FfiContext, ms: u32) void {
     c.interval_ms = ms;
 }
 
+/// Set the gradient colors for the progress bar.
+/// Pass 3 RGB color stops (start, mid, end). To use a 2-stop gradient,
+/// set mid_r=mid_g=mid_b=255 and mid_is_none=true (or just use the env var).
+/// For simplicity, this always takes 3 stops; set mid equal to the average
+/// of start and end for a perceptually linear 2-stop effect, or use
+/// PROGREZ_GRADIENT env var for 2-stop support.
+export fn progrez_set_gradient(
+    ctx: ?*FfiContext,
+    start_r: u8,
+    start_g: u8,
+    start_b: u8,
+    mid_r: u8,
+    mid_g: u8,
+    mid_b: u8,
+    end_r: u8,
+    end_g: u8,
+    end_b: u8,
+) void {
+    const c = ctx orelse return;
+    c.gradient = .{
+        .start = .{ .r = start_r, .g = start_g, .b = start_b },
+        .mid = .{ .r = mid_r, .g = mid_g, .b = mid_b },
+        .end = .{ .r = end_r, .g = end_g, .b = end_b },
+    };
+}
+
+/// Set a 2-stop gradient (start to end, linear interpolation).
+export fn progrez_set_gradient_2(
+    ctx: ?*FfiContext,
+    start_r: u8,
+    start_g: u8,
+    start_b: u8,
+    end_r: u8,
+    end_g: u8,
+    end_b: u8,
+) void {
+    const c = ctx orelse return;
+    c.gradient = .{
+        .start = .{ .r = start_r, .g = start_g, .b = start_b },
+        .mid = null,
+        .end = .{ .r = end_r, .g = end_g, .b = end_b },
+    };
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────
 
 test "ffi: null ctx safety" {
@@ -350,6 +436,8 @@ test "ffi: null ctx safety" {
     progrez_set_guess(null, 0, 0);
     progrez_set_identity(null, null, null);
     progrez_set_interval_ms(null, 0);
+    progrez_set_gradient(null, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    progrez_set_gradient_2(null, 0, 0, 0, 0, 0, 0);
 }
 
 test "ffi: parse progress env" {
@@ -365,6 +453,44 @@ test "ffi: parse interval env" {
     try std.testing.expectEqual(@as(u32, 500), parseIntervalEnv("500"));
     try std.testing.expectEqual(@as(u32, 100), parseIntervalEnv(null));
     try std.testing.expectEqual(@as(u32, 100), parseIntervalEnv("garbage"));
+}
+
+test "ffi: parse hex color" {
+    const c = parseHexColor("FF8000");
+    try std.testing.expect(c != null);
+    try std.testing.expectEqual(@as(u8, 255), c.?.r);
+    try std.testing.expectEqual(@as(u8, 128), c.?.g);
+    try std.testing.expectEqual(@as(u8, 0), c.?.b);
+    try std.testing.expectEqual(@as(?Color, null), parseHexColor(""));
+    try std.testing.expectEqual(@as(?Color, null), parseHexColor("ZZZZZZ"));
+    try std.testing.expectEqual(@as(?Color, null), parseHexColor("FFF")); // too short
+}
+
+test "ffi: parse gradient env 2-stop" {
+    const g = parseGradientEnv("FF0000,00FF00");
+    try std.testing.expect(g != null);
+    try std.testing.expectEqual(@as(u8, 255), g.?.start.r);
+    try std.testing.expectEqual(@as(u8, 0), g.?.start.g);
+    try std.testing.expectEqual(@as(u8, 0), g.?.end.r);
+    try std.testing.expectEqual(@as(u8, 255), g.?.end.g);
+    try std.testing.expect(g.?.mid == null);
+}
+
+test "ffi: parse gradient env 3-stop" {
+    const g = parseGradientEnv("FF0000,FFFF00,00FF00");
+    try std.testing.expect(g != null);
+    try std.testing.expectEqual(@as(u8, 255), g.?.start.r);
+    try std.testing.expectEqual(@as(u8, 255), g.?.mid.?.r);
+    try std.testing.expectEqual(@as(u8, 255), g.?.mid.?.g);
+    try std.testing.expectEqual(@as(u8, 0), g.?.end.r);
+    try std.testing.expectEqual(@as(u8, 255), g.?.end.g);
+}
+
+test "ffi: parse gradient env invalid" {
+    try std.testing.expectEqual(@as(?GradientColors, null), parseGradientEnv(null));
+    try std.testing.expectEqual(@as(?GradientColors, null), parseGradientEnv("garbage"));
+    try std.testing.expectEqual(@as(?GradientColors, null), parseGradientEnv("FF0000")); // no comma
+    try std.testing.expectEqual(@as(?GradientColors, null), parseGradientEnv("ZZ0000,FF0000")); // bad hex
 }
 
 test "ffi: seqlock read returns null during write" {

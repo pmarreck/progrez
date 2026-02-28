@@ -21,6 +21,13 @@ void progrez_set_guess(progrez_ctx *ctx, uint64_t guess_files, uint64_t guess_by
 void progrez_update(progrez_ctx *ctx, uint64_t files_processed, uint64_t bytes_processed);
 void progrez_finish(progrez_ctx *ctx);
 void progrez_set_interval_ms(progrez_ctx *ctx, uint32_t ms);
+void progrez_set_gradient(progrez_ctx *ctx,
+                          uint8_t start_r, uint8_t start_g, uint8_t start_b,
+                          uint8_t mid_r,   uint8_t mid_g,   uint8_t mid_b,
+                          uint8_t end_r,   uint8_t end_g,   uint8_t end_b);
+void progrez_set_gradient_2(progrez_ctx *ctx,
+                            uint8_t start_r, uint8_t start_g, uint8_t start_b,
+                            uint8_t end_r,   uint8_t end_g,   uint8_t end_b);
 
 int usleep(unsigned int usec);
 ]]

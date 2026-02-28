@@ -26,6 +26,19 @@ const bar_right_cap = "\xe2\x96\x8c"; // ▌ LEFT HALF BLOCK (U+258C)
 
 const min_bar_width: usize = 10;
 
+/// RGB color triplet.
+pub const Color = struct { r: u8, g: u8, b: u8 };
+
+/// Gradient color stops for the progress bar.
+/// Supports 2-stop (start/end) or 3-stop (start/mid/end) gradients.
+pub const GradientColors = struct {
+    start: Color = .{ .r = 0, .g = 255, .b = 255 }, // cyan
+    mid: ?Color = .{ .r = 128, .g = 0, .b = 255 }, // violet (null = lerp start->end)
+    end: Color = .{ .r = 255, .g = 0, .b = 255 }, // magenta
+
+    pub const default: GradientColors = .{};
+};
+
 /// Render a single-line determinate progress bar into `buf`.
 /// Returns a slice of `buf` containing the rendered line.
 ///
@@ -37,7 +50,7 @@ const min_bar_width: usize = 10;
 ///   pct + files                (drop bytes)
 ///   pct                        (drop files)
 ///   (empty)                    (drop pct -- extremely narrow)
-pub fn renderDeterminate(state: *const core.ProgrezState, caps: terminal.TerminalCaps, now_ns: i128, buf: []u8) []const u8 {
+pub fn renderDeterminate(state: *const core.ProgrezState, caps: terminal.TerminalCaps, now_ns: i128, buf: []u8, gradient: GradientColors) []const u8 {
     _ = now_ns;
     const width: usize = @intCast(caps.width);
     if (width == 0 or buf.len == 0) return "";
@@ -187,7 +200,7 @@ pub fn renderDeterminate(state: *const core.ProgrezState, caps: terminal.Termina
 
     // Render the bar itself
     if (caps.unicode) {
-        pos = renderUnicodeBar(buf, pos, chosen_bar_width, pct_frac, caps.truecolor);
+        pos = renderUnicodeBar(buf, pos, chosen_bar_width, pct_frac, caps.truecolor, gradient);
     } else {
         pos = renderAsciiBar(buf, pos, chosen_bar_width, pct_frac);
     }
@@ -357,7 +370,7 @@ pub fn renderIndeterminate(state: *const core.ProgrezState, caps: terminal.Termi
 
 /// Render a Unicode progress bar with sub-character precision.
 /// Returns the new position in the buffer.
-fn renderUnicodeBar(buf: []u8, start: usize, bar_width: usize, frac: f64, truecolor: bool) usize {
+fn renderUnicodeBar(buf: []u8, start: usize, bar_width: usize, frac: f64, truecolor: bool, gradient: GradientColors) usize {
     var pos = start;
 
     // Bar structure: cap + inner + cap
@@ -381,7 +394,7 @@ fn renderUnicodeBar(buf: []u8, start: usize, bar_width: usize, frac: f64, trueco
     // Render filled cells
     for (0..full_cells) |i| {
         if (truecolor) {
-            pos = writeColoredBlock(buf, pos, full_block, i, inner_width);
+            pos = writeColoredBlock(buf, pos, full_block, i, inner_width, gradient);
         } else {
             if (pos + full_block.len <= buf.len) {
                 @memcpy(buf[pos .. pos + full_block.len], full_block);
@@ -398,7 +411,7 @@ fn renderUnicodeBar(buf: []u8, start: usize, bar_width: usize, frac: f64, trueco
         const idx = 8 - partial_eighth;
         const block = partial_blocks[idx];
         if (truecolor) {
-            pos = writeColoredPartialBlock(buf, pos, block, full_cells, inner_width);
+            pos = writeColoredPartialBlock(buf, pos, block, full_cells, inner_width, gradient);
         } else {
             if (pos + block.len <= buf.len) {
                 @memcpy(buf[pos .. pos + block.len], block);
@@ -502,25 +515,29 @@ fn renderAsciiBar(buf: []u8, start: usize, bar_width: usize, frac: f64) usize {
     return pos;
 }
 
+/// Linearly interpolate between two colors.
+fn lerpColor(a: Color, b: Color, t: f64) Color {
+    return .{
+        .r = @intFromFloat(@as(f64, @floatFromInt(a.r)) + (@as(f64, @floatFromInt(b.r)) - @as(f64, @floatFromInt(a.r))) * t),
+        .g = @intFromFloat(@as(f64, @floatFromInt(a.g)) + (@as(f64, @floatFromInt(b.g)) - @as(f64, @floatFromInt(a.g))) * t),
+        .b = @intFromFloat(@as(f64, @floatFromInt(a.b)) + (@as(f64, @floatFromInt(b.b)) - @as(f64, @floatFromInt(a.b))) * t),
+    };
+}
+
 /// Compute the gradient color at a given cell position.
-/// Gradient: cyan(0,255,255) -> violet(128,0,255) -> magenta(255,0,255)
-fn gradientColor(cell_idx: usize, total_cells: usize) struct { r: u8, g: u8, b: u8 } {
+fn gradientColor(cell_idx: usize, total_cells: usize, gradient: GradientColors) Color {
     const t: f64 = if (total_cells <= 1) 0.0 else @as(f64, @floatFromInt(cell_idx)) / @as(f64, @floatFromInt(total_cells - 1));
 
-    if (t <= 0.5) {
-        const t2 = t * 2.0;
-        return .{
-            .r = @intFromFloat(0.0 + 128.0 * t2),
-            .g = @intFromFloat(255.0 * (1.0 - t2)),
-            .b = 255,
-        };
+    if (gradient.mid) |mid| {
+        // 3-stop gradient: start -> mid -> end
+        if (t <= 0.5) {
+            return lerpColor(gradient.start, mid, t * 2.0);
+        } else {
+            return lerpColor(mid, gradient.end, (t - 0.5) * 2.0);
+        }
     } else {
-        const t2 = (t - 0.5) * 2.0;
-        return .{
-            .r = @intFromFloat(128.0 + 127.0 * t2),
-            .g = 0,
-            .b = 255,
-        };
+        // 2-stop gradient: start -> end
+        return lerpColor(gradient.start, gradient.end, t);
     }
 }
 
@@ -533,9 +550,9 @@ const empty_bg_b: u8 = 60;
 /// Write a partial block character with foreground gradient color AND
 /// background color matching the empty bar region, so the gap in the
 /// partial character doesn't show the terminal's own background.
-fn writeColoredPartialBlock(buf: []u8, start: usize, block: []const u8, cell_idx: usize, total_cells: usize) usize {
+fn writeColoredPartialBlock(buf: []u8, start: usize, block: []const u8, cell_idx: usize, total_cells: usize, gradient: GradientColors) usize {
     var pos = start;
-    const c = gradientColor(cell_idx, total_cells);
+    const c = gradientColor(cell_idx, total_cells, gradient);
 
     // Set both FG (38) and BG (48) in one escape
     var esc_buf: [64]u8 = undefined;
@@ -556,9 +573,9 @@ fn writeColoredPartialBlock(buf: []u8, start: usize, block: []const u8, cell_idx
 
 /// Write a single colored block character with truecolor gradient.
 /// Gradient: cyan(0,255,255) -> violet(128,0,255) -> magenta(255,0,255)
-fn writeColoredBlock(buf: []u8, start: usize, block: []const u8, cell_idx: usize, total_cells: usize) usize {
+fn writeColoredBlock(buf: []u8, start: usize, block: []const u8, cell_idx: usize, total_cells: usize, gradient: GradientColors) usize {
     var pos = start;
-    const c = gradientColor(cell_idx, total_cells);
+    const c = gradientColor(cell_idx, total_cells, gradient);
 
     // Write ANSI truecolor escape: \x1b[38;2;R;G;Bm
     var esc_buf: [32]u8 = undefined;
@@ -576,11 +593,11 @@ fn writeColoredBlock(buf: []u8, start: usize, block: []const u8, cell_idx: usize
 
 /// Top-level render dispatcher: selects the correct renderer based on mode.
 /// Returns a slice of `buf` containing the rendered line, or empty for idle.
-pub fn renderLine(state: *const core.ProgrezState, caps: terminal.TerminalCaps, now_ns: i128, buf: []u8) []const u8 {
+pub fn renderLine(state: *const core.ProgrezState, caps: terminal.TerminalCaps, now_ns: i128, buf: []u8, gradient: GradientColors) []const u8 {
     return switch (state.mode) {
         .idle => "",
         .indeterminate => renderIndeterminate(state, caps, buf),
-        .determinate => renderDeterminate(state, caps, now_ns, buf),
+        .determinate => renderDeterminate(state, caps, now_ns, buf, gradient),
     };
 }
 
@@ -836,7 +853,7 @@ test "render: determinate bar at width 80 (unicode, no color)" {
     };
 
     var buf_arr: [1024]u8 = undefined;
-    const line = renderDeterminate(&state, caps, 12_300_000_000, &buf_arr);
+    const line = renderDeterminate(&state, caps, 12_300_000_000, &buf_arr, GradientColors.default);
 
     // Should contain label, percentage, file count
     try std.testing.expect(std.mem.indexOf(u8, line, "Compressing") != null);
@@ -866,7 +883,7 @@ test "render: determinate bar ASCII fallback" {
     };
 
     var buf_arr: [1024]u8 = undefined;
-    const line = renderDeterminate(&state, caps, 12_300_000_000, &buf_arr);
+    const line = renderDeterminate(&state, caps, 12_300_000_000, &buf_arr, GradientColors.default);
 
     // Should use ASCII bar chars
     try std.testing.expect(std.mem.indexOf(u8, line, "[") != null);
@@ -895,7 +912,7 @@ test "render: progressive stat dropping at narrow width" {
     };
 
     var buf_arr: [1024]u8 = undefined;
-    const line = renderDeterminate(&state, caps, 12_300_000_000, &buf_arr);
+    const line = renderDeterminate(&state, caps, 12_300_000_000, &buf_arr, GradientColors.default);
 
     // At width 40, ETA should be dropped but % should still be present
     try std.testing.expect(std.mem.indexOf(u8, line, "%") != null);
@@ -918,7 +935,7 @@ test "render: truecolor gradient produces ANSI escape sequences" {
     };
 
     var buf_arr: [4096]u8 = undefined;
-    const line = renderDeterminate(&state, caps, 0, &buf_arr);
+    const line = renderDeterminate(&state, caps, 0, &buf_arr, GradientColors.default);
 
     // Should contain ANSI truecolor escape
     try std.testing.expect(std.mem.indexOf(u8, line, "\x1b[38;2;") != null);
@@ -942,7 +959,7 @@ test "render: 0% progress" {
     };
 
     var buf_arr: [1024]u8 = undefined;
-    const line = renderDeterminate(&state, caps, 0, &buf_arr);
+    const line = renderDeterminate(&state, caps, 0, &buf_arr, GradientColors.default);
 
     try std.testing.expect(std.mem.indexOf(u8, line, "0.0%") != null);
     try std.testing.expect(std.mem.indexOf(u8, line, "Starting") != null);
@@ -964,7 +981,7 @@ test "render: 100% progress" {
     };
 
     var buf_arr: [1024]u8 = undefined;
-    const line = renderDeterminate(&state, caps, 5_000_000_000, &buf_arr);
+    const line = renderDeterminate(&state, caps, 5_000_000_000, &buf_arr, GradientColors.default);
 
     try std.testing.expect(std.mem.indexOf(u8, line, "100.0%") != null);
 }
@@ -1140,7 +1157,7 @@ test "render: dispatch selects correct renderer for determinate" {
     };
 
     var buf: [2048]u8 = undefined;
-    const line = renderLine(&state, tty_caps, 1_000_000_000, &buf);
+    const line = renderLine(&state, tty_caps, 1_000_000_000, &buf, GradientColors.default);
     // Determinate mode should produce block chars
     try std.testing.expect(std.mem.indexOf(u8, line, "\xe2\x96\x88") != null or
         std.mem.indexOf(u8, line, "\xe2\x96\x91") != null);
@@ -1162,7 +1179,7 @@ test "render: dispatch selects indeterminate renderer" {
     };
 
     var buf: [512]u8 = undefined;
-    const line = renderLine(&state, tty_caps, 1_000_000_000, &buf);
+    const line = renderLine(&state, tty_caps, 1_000_000_000, &buf, GradientColors.default);
     // Indeterminate should have spinner or count
     try std.testing.expect(std.mem.indexOf(u8, line, "Scanning") != null);
 }
@@ -1180,6 +1197,6 @@ test "render: dispatch returns empty for idle" {
     };
 
     var buf: [512]u8 = undefined;
-    const line = renderLine(&state, caps, 0, &buf);
+    const line = renderLine(&state, caps, 0, &buf, GradientColors.default);
     try std.testing.expectEqual(@as(usize, 0), line.len);
 }
