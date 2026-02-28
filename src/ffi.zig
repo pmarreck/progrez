@@ -251,6 +251,13 @@ export fn progrez_create(label: ?[*:0]const u8) ?*FfiContext {
     state.start_time_ns = now_ns;
     state.last_update_ns = now_ns;
 
+    const sparkline_env = getEnvVar("PROGREZ_SPARKLINE");
+    if (sparkline_env) |e| {
+        if (std.mem.eql(u8, @as([]const u8, e), "true") or std.mem.eql(u8, @as([]const u8, e), "1")) {
+            state.sparkline_enabled = true;
+        }
+    }
+
     ctx.* = .{
         .state = state,
         .caps = caps,
@@ -425,6 +432,12 @@ export fn progrez_set_gradient_2(
     };
 }
 
+/// Enable or disable the throughput sparkline display.
+export fn progrez_set_sparkline(ctx: ?*FfiContext, enabled: bool) void {
+    const c = ctx orelse return;
+    c.state.sparkline_enabled = enabled;
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────
 
 test "ffi: null ctx safety" {
@@ -438,6 +451,7 @@ test "ffi: null ctx safety" {
     progrez_set_interval_ms(null, 0);
     progrez_set_gradient(null, 0, 0, 0, 0, 0, 0, 0, 0, 0);
     progrez_set_gradient_2(null, 0, 0, 0, 0, 0, 0);
+    progrez_set_sparkline(null, false);
 }
 
 test "ffi: parse progress env" {

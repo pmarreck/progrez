@@ -31,6 +31,9 @@ void progrez_set_gradient_2(progrez_ctx *ctx,
                             uint8_t start_r, uint8_t start_g, uint8_t start_b,
                             uint8_t end_r,   uint8_t end_g,   uint8_t end_b);
 
+/* Enable or disable throughput sparkline display. */
+void progrez_set_sparkline(progrez_ctx *ctx, _Bool enabled);
+
 #ifdef __cplusplus
 }
 #endif

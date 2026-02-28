@@ -89,6 +89,19 @@ pub fn renderDeterminate(state: *const core.ProgrezState, caps: terminal.Termina
         throughput_str = format.formatThroughput(state.ema_bytes_per_sec, &throughput_buf);
     }
 
+    var sparkline_buf: [32]u8 = undefined;
+    var sparkline_str: []const u8 = "";
+    if (state.sparkline_enabled and state.rate_history_len >= 2) {
+        // Read ring buffer in order (oldest first)
+        var ordered: [8]f64 = undefined;
+        const n = state.rate_history_len;
+        const start_idx: usize = if (n >= 8) state.rate_history_idx else 0;
+        for (0..n) |i| {
+            ordered[i] = state.rate_history[(start_idx + i) % 8];
+        }
+        sparkline_str = format.formatSparkline(&ordered, n, &sparkline_buf);
+    }
+
     // --- 2. Build stats string with priority dropping ---
     // Stat pieces in priority order (lowest priority = dropped first):
     //   eta, throughput, bytes, files, pct
@@ -113,7 +126,7 @@ pub fn renderDeterminate(state: *const core.ProgrezState, caps: terminal.Termina
 
     for (levels) |level| {
         // Build stats string for this level
-        var stats_parts: [5][]const u8 = undefined;
+        var stats_parts: [6][]const u8 = undefined;
         var stats_count: usize = 0;
 
         // Always include pct unless level == .none
@@ -136,6 +149,12 @@ pub fn renderDeterminate(state: *const core.ProgrezState, caps: terminal.Termina
         if (level == .all or level == .no_eta) {
             if (throughput_str.len > 0) {
                 stats_parts[stats_count] = throughput_str;
+                stats_count += 1;
+            }
+        }
+        if (level == .all or level == .no_eta) {
+            if (sparkline_str.len > 0) {
+                stats_parts[stats_count] = sparkline_str;
                 stats_count += 1;
             }
         }
@@ -1249,4 +1268,36 @@ test "render: dispatch returns empty for idle" {
     var buf: [512]u8 = undefined;
     const line = renderLine(&state, caps, 0, &buf, GradientColors.default);
     try std.testing.expectEqual(@as(usize, 0), line.len);
+}
+
+test "render: determinate bar shows sparkline when enabled" {
+    var state = core.ProgrezState.init("Test");
+    state.setDeterminate(100, 10_000);
+    state.files_processed = 50;
+    state.bytes_processed = 5000;
+    state.ema_bytes_per_sec = 1_500_000;
+    state.samples_count = 5;
+    state.start_time_ns = 0;
+    state.sparkline_enabled = true;
+    // Fill rate history
+    for (0..8) |i| {
+        state.rate_history[i] = @as(f64, @floatFromInt(i + 1)) * 200_000.0;
+    }
+    state.rate_history_len = 8;
+
+    const caps = terminal.TerminalCaps{
+        .is_tty = true,
+        .unicode = true,
+        .truecolor = false,
+        .color_256 = false,
+        .color_16 = false,
+        .width = 120,
+    };
+
+    var buf_arr: [2048]u8 = undefined;
+    const line = renderDeterminate(&state, caps, 5_000_000_000, &buf_arr, GradientColors.default);
+
+    // Should contain sparkline lower block chars (▁ = \xe2\x96\x81)
+    // This char is NOT used by the progress bar itself, so it can only come from sparkline
+    try std.testing.expect(std.mem.indexOf(u8, line, "\xe2\x96\x81") != null);
 }
