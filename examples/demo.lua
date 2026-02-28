@@ -28,6 +28,10 @@ void progrez_set_gradient(progrez_ctx *ctx,
 void progrez_set_gradient_2(progrez_ctx *ctx,
                             uint8_t start_r, uint8_t start_g, uint8_t start_b,
                             uint8_t end_r,   uint8_t end_g,   uint8_t end_b);
+void progrez_set_label(progrez_ctx *ctx, const char *label);
+void progrez_set_sparkline(progrez_ctx *ctx, bool enabled);
+void progrez_set_notify(progrez_ctx *ctx, bool enabled);
+void progrez_set_notify_after(progrez_ctx *ctx, uint32_t seconds);
 
 int usleep(unsigned int usec);
 ]]
@@ -65,6 +69,9 @@ for i = 1, 70 do
     progrez.progrez_update(ctx, i, i * 1024)
     sleep_ms(50)
 end
+
+-- Update label before switching to determinate mode
+progrez.progrez_set_label(ctx, "Processing")
 
 -- Phase 2: Determinate (processing)
 progrez.progrez_set_determinate(ctx, 200, 200 * 1024)

@@ -29,6 +29,9 @@ int main(void) {
         SLEEP_MS(50);
     }
 
+    /* Update label before switching to determinate mode */
+    progrez_set_label(ctx, "Processing");
+
     /* Phase 2: Determinate (processing) */
     progrez_set_determinate(ctx, 200, 200 * 1024);
 
