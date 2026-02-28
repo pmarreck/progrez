@@ -38,6 +38,9 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(dylib);
 
+    // Install C header for downstream C/FFI consumers
+    b.installFile("include/progrez.h", "include/progrez.h");
+
     // Expose module for downstream Zig consumers
     _ = b.addModule("progrez", .{
         .root_source_file = b.path("src/lib.zig"),
