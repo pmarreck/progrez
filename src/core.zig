@@ -47,6 +47,12 @@ pub const ProgrezState = struct {
     // Spinner
     spinner_frame: u8,
 
+    // Sparkline rate history (ring buffer of last 8 instantaneous rates)
+    rate_history: [8]f64,
+    rate_history_len: u8, // how many entries have been written (0-8)
+    rate_history_idx: u8, // next write position
+    sparkline_enabled: bool,
+
     // Label (inline buffer, no allocations)
     label_buf: [128]u8,
     label_len: u8,
@@ -75,6 +81,10 @@ pub const ProgrezState = struct {
             .guess_total_files = null,
             .guess_total_bytes = null,
             .spinner_frame = 0,
+            .rate_history = [_]f64{0.0} ** 8,
+            .rate_history_len = 0,
+            .rate_history_idx = 0,
+            .sparkline_enabled = false,
             .label_buf = undefined,
             .label_len = 0,
             .caller_name_buf = undefined,
@@ -167,6 +177,11 @@ pub const ProgrezState = struct {
                 } else {
                     self.ema_bytes_per_sec = self.ema_alpha * instantaneous_bytes_rate + (1.0 - self.ema_alpha) * self.ema_bytes_per_sec;
                 }
+
+                // Push to sparkline ring buffer
+                self.rate_history[self.rate_history_idx] = instantaneous_bytes_rate;
+                self.rate_history_idx = (self.rate_history_idx + 1) % 8;
+                if (self.rate_history_len < 8) self.rate_history_len += 1;
             }
 
             // Files rate
@@ -386,4 +401,21 @@ test "core: elapsed seconds" {
     var state = ProgrezState.init("Test");
     state.start_time_ns = 0;
     try std.testing.expect(@abs(state.elapsedSeconds(2_500_000_000) - 2.5) < 0.001);
+}
+
+test "core: rate history ring buffer" {
+    var state = ProgrezState.init("Test");
+    state.setDeterminate(0, 10000);
+    state.start_time_ns = 0;
+    state.last_update_ns = 0;
+
+    // Record several updates at 1-second intervals
+    state.recordUpdate(1000, 0, 1 * std.time.ns_per_s);
+    state.recordUpdate(3000, 0, 2 * std.time.ns_per_s);
+    state.recordUpdate(6000, 0, 3 * std.time.ns_per_s);
+    state.recordUpdate(10000, 0, 4 * std.time.ns_per_s);
+
+    try std.testing.expectEqual(@as(u8, 4), state.rate_history_len);
+    // First rate: 1000 bytes/sec
+    try std.testing.expect(state.rate_history[0] > 0.0);
 }
