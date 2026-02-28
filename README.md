@@ -1,5 +1,6 @@
 # progrez
 
+[![Garnix](https://img.shields.io/endpoint?url=https://garnix.io/api/badges/pmarreck/progrez?branch=yolo)](https://garnix.io)
 [![CI](https://github.com/pmarreck/progrez/actions/workflows/ci.yml/badge.svg?branch=yolo)](https://github.com/pmarreck/progrez/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 

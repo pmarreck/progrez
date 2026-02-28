@@ -60,6 +60,9 @@ progrez_set_determinate(ctx, actual_total_files, actual_total_bytes);
 | `PROGREZ_INTERVAL` | milliseconds (e.g. `500`) | Render interval (default: 100ms) |
 | `PROGREZ_STYLE` | `ascii` | Force ASCII mode (no Unicode, no color) |
 | `PROGREZ_GRADIENT` | hex colors (e.g. `FF0000,00FF00` or `FF0000,FFFF00,00FF00`) | Custom gradient (2 or 3 stops) |
+| `PROGREZ_SPARKLINE` | `true`/`false` | Enable throughput sparkline graph |
+| `PROGREZ_NOTIFY` | `true`/`false`/`auto` | System notifications (default: `auto`) |
+| `PROGREZ_NOTIFY_AFTER` | seconds (default: `10`) | Notification time threshold |
 | `NO_COLOR` | any value | Disable all color output (respects no-color.org convention) |
 
 Standard terminal variables (`COLORTERM`, `TERM`, `WT_SESSION`) are also read for capability detection.

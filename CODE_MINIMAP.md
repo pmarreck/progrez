@@ -11,6 +11,7 @@ Pure logic core: progress state, mode transitions, EMA rate estimation, ETA/perc
 - `ProgrezState` — all mutable progress state (counters, timing, EMA, guesses, spinner, label, identity)
   - `init(label)` — create state in idle mode with given label
   - `getLabel()` — return label as slice
+  - `setLabel(label)` — update display label mid-operation
   - `setIndeterminate()` — transition to spinner mode
   - `setDeterminate(files_total, bytes_total)` — transition to bar mode with known totals (0 = not tracking)
   - `setIdentity(caller_name, context_name)` — set caller identity for rich completion messages
@@ -18,7 +19,7 @@ Pure logic core: progress state, mode transitions, EMA rate estimation, ETA/perc
   - `getContextName()` — return context name or null if no identity set
   - `setGuess(guess_files, guess_bytes)` — set estimated totals for indeterminate mode (0 = no guess)
   - `snapshot(now_ns)` — capture read-only snapshot of current counters
-  - `recordUpdate(bytes_processed, files_processed, now_ns)` — record cumulative progress, recalculate EMA rates
+  - `recordUpdate(bytes_processed, files_processed, now_ns)` — record cumulative progress, recalculate EMA rates, push to sparkline ring buffer
   - `estimateEtaSeconds()` — estimate seconds remaining via EMA rate (null if <3 samples or no total)
   - `percentComplete()` — completion fraction [0.0, 1.0] (null if no total known)
   - `elapsedSeconds(now_ns)` — seconds elapsed since start_time_ns
@@ -31,6 +32,8 @@ Pure formatting functions. All take a value + caller-provided buffer, return a s
 - `formatPercent(fraction, buf)` — fraction [0.0-1.0] as percentage with one decimal place
 - `formatEta(seconds, buf)` — seconds as "ETA M:SS" or "ETA H:MM:SS"
 - `formatElapsed(seconds, buf)` — seconds as "X.XXs", "XmXXs", or "XhXmXs"
+- `formatThroughput(bytes_per_sec, buf)` — throughput rate as "4.2 MB/s" with SI units
+- `formatSparkline(rates, count, buf)` — rate history as Unicode block sparkline (▁▂▃▄▅▆▇█)
 
 ## src/terminal.zig
 Terminal capability detection. Pure logic: takes injected EnvInfo, returns TerminalCaps.
@@ -66,10 +69,23 @@ C FFI boundary layer. Bridges pure Zig core to C consumers. Manages render threa
 - `progrez_set_guess(ctx, guess_files, guess_bytes)` — set estimated totals for indeterminate mode
 - `progrez_set_identity(ctx, caller_name, context_name)` — set caller identity
 - `progrez_set_interval_ms(ctx, ms)` — set render interval in milliseconds
+- `progrez_set_gradient(ctx, ...)` — set 3-stop gradient (start, mid, end RGB)
+- `progrez_set_gradient_2(ctx, ...)` — set 2-stop gradient (start, end RGB)
+- `progrez_set_label(ctx, label)` — update display label mid-operation
+- `progrez_set_sparkline(ctx, enabled)` — enable/disable throughput sparkline
+- `progrez_set_notify(ctx, enabled)` — enable/disable system notifications
+- `progrez_set_notify_after(ctx, seconds)` — set notification time threshold
+- `progrez_set_notify_callback(ctx, fn, userdata)` — set custom notification callback
 
 Internal:
 - `parseProgressEnv(val)` — parse PROGRESS env var ("true"/"1" -> true, "false"/"0" -> false)
 - `parseIntervalEnv(val)` — parse PROGREZ_INTERVAL as u32 ms (default 100)
+- `parseHexColor(hex)` — parse 6-digit hex color string to Color
+- `parseGradientEnv(val)` — parse PROGREZ_GRADIENT env var (2 or 3-stop)
+- `parseNotifyEnv(val)` — parse PROGREZ_NOTIFY env var (auto/on/off)
+- `parseNotifyAfterEnv(val)` — parse PROGREZ_NOTIFY_AFTER as u32 secs (default 10)
+- `detectNotifyMethod()` — detect available notification method (osascript/notify-send/bell)
+- `sendNotification(method, message, alloc)` — dispatch system notification
 - `getEnvVar(name)` — read environment variable
 - `getTerminalWidth()` — POSIX ioctl TIOCGWINSZ on stderr (default 80)
 - `readSnapshot(ctx)` — seqlock read: returns snapshot if consistent, null if write in progress
@@ -77,7 +93,7 @@ Internal:
 - `renderLoop(ctx)` — main render loop on dedicated thread
 
 ## include/progrez.h
-C header. Declares opaque `progrez_ctx` type and all 9 FFI functions.
+C header. Declares opaque `progrez_ctx` type and all FFI functions including gradient, label, sparkline, and notification APIs.
 
 ## examples/demo.c
 C demo program. Exercises indeterminate scan phase then determinate processing phase via the C FFI.
@@ -86,7 +102,7 @@ C demo program. Exercises indeterminate scan phase then determinate processing p
 CLI integration tests (Bash). 3 tests: demo runs without crash, PROGRESS=false suppresses output, completion summary present.
 
 ## build.zig
-Build system. Static library (`libprogrez`), C demo executable (`progrez-demo`), unit test step. Default optimize: ReleaseFast. Exposes Zig module for downstream consumers.
+Build system. Static library (`libprogrez`), dynamic library (`libprogrez.dylib`/`.so`), C demo executable (`progrez-demo`), unit test step. Default optimize: ReleaseFast. Installs C header to `include/`. Exposes Zig module for downstream consumers.
 
 ## flake.nix
 Nix flake. Provides `packages.default` (the library), `checks.test` (unit tests for Garnix CI), and `devShells.default` (zig + hyperfine).
