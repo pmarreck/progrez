@@ -34,6 +34,9 @@ void progrez_set_gradient_2(progrez_ctx *ctx,
 /* Enable or disable throughput sparkline display. */
 void progrez_set_sparkline(progrez_ctx *ctx, _Bool enabled);
 
+/* Update the display label mid-operation. */
+void progrez_set_label(progrez_ctx *ctx, const char *label);
+
 #ifdef __cplusplus
 }
 #endif

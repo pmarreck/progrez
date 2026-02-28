@@ -104,6 +104,13 @@ pub const ProgrezState = struct {
         return self.label_buf[0..self.label_len];
     }
 
+    /// Update the display label.
+    pub fn setLabel(self: *ProgrezState, label: []const u8) void {
+        const copy_len = @min(label.len, self.label_buf.len);
+        @memcpy(self.label_buf[0..copy_len], label[0..copy_len]);
+        self.label_len = @intCast(copy_len);
+    }
+
     /// Transition to indeterminate mode (spinner, no percentage).
     pub fn setIndeterminate(self: *ProgrezState) void {
         self.mode = .indeterminate;
@@ -401,6 +408,17 @@ test "core: elapsed seconds" {
     var state = ProgrezState.init("Test");
     state.start_time_ns = 0;
     try std.testing.expect(@abs(state.elapsedSeconds(2_500_000_000) - 2.5) < 0.001);
+}
+
+test "core: setLabel updates label" {
+    var state = ProgrezState.init("Scanning");
+    try std.testing.expectEqualStrings("Scanning", state.getLabel());
+
+    state.setLabel("Compressing");
+    try std.testing.expectEqualStrings("Compressing", state.getLabel());
+
+    state.setLabel("Verifying");
+    try std.testing.expectEqualStrings("Verifying", state.getLabel());
 }
 
 test "core: rate history ring buffer" {

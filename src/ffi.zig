@@ -438,6 +438,13 @@ export fn progrez_set_sparkline(ctx: ?*FfiContext, enabled: bool) void {
     c.state.sparkline_enabled = enabled;
 }
 
+/// Update the display label.
+export fn progrez_set_label(ctx: ?*FfiContext, label: ?[*:0]const u8) void {
+    const c = ctx orelse return;
+    const label_slice: []const u8 = if (label) |l| std.mem.span(l) else "";
+    c.state.setLabel(label_slice);
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────
 
 test "ffi: null ctx safety" {
@@ -452,6 +459,7 @@ test "ffi: null ctx safety" {
     progrez_set_gradient(null, 0, 0, 0, 0, 0, 0, 0, 0, 0);
     progrez_set_gradient_2(null, 0, 0, 0, 0, 0, 0);
     progrez_set_sparkline(null, false);
+    progrez_set_label(null, null);
 }
 
 test "ffi: parse progress env" {
