@@ -23,6 +23,21 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(lib);
 
+    // --- Shared library (for LuaJIT FFI, Python ctypes, etc.) ---
+    const dylib_module = b.createModule(.{
+        .root_source_file = b.path("src/lib.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+
+    const dylib = b.addLibrary(.{
+        .name = "progrez",
+        .linkage = .dynamic,
+        .root_module = dylib_module,
+    });
+    b.installArtifact(dylib);
+
     // Expose module for downstream Zig consumers
     _ = b.addModule("progrez", .{
         .root_source_file = b.path("src/lib.zig"),

@@ -24,17 +24,17 @@ int main(void) {
     progrez_set_identity(ctx, "progrez-demo", "demo directory scan");
     progrez_set_indeterminate(ctx);
 
-    for (uint64_t i = 0; i < 50; i++) {
+    for (uint64_t i = 0; i < 70; i++) {
         progrez_update(ctx, i + 1, (i + 1) * 1024);
         SLEEP_MS(50);
     }
 
     /* Phase 2: Determinate (processing) */
-    progrez_set_determinate(ctx, 50, 50 * 1024);
+    progrez_set_determinate(ctx, 200, 200 * 1024);
 
-    for (uint64_t i = 0; i < 50; i++) {
+    for (uint64_t i = 0; i < 200; i++) {
         progrez_update(ctx, i + 1, (i + 1) * 1024);
-        SLEEP_MS(100);
+        SLEEP_MS(25);
     }
 
     progrez_finish(ctx);

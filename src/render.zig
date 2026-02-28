@@ -398,7 +398,7 @@ fn renderUnicodeBar(buf: []u8, start: usize, bar_width: usize, frac: f64, trueco
         const idx = 8 - partial_eighth;
         const block = partial_blocks[idx];
         if (truecolor) {
-            pos = writeColoredBlock(buf, pos, block, full_cells, inner_width);
+            pos = writeColoredPartialBlock(buf, pos, block, full_cells, inner_width);
         } else {
             if (pos + block.len <= buf.len) {
                 @memcpy(buf[pos .. pos + block.len], block);
@@ -417,10 +417,33 @@ fn renderUnicodeBar(buf: []u8, start: usize, bar_width: usize, frac: f64, trueco
     }
 
     // Render empty cells
-    for (0..empty_cells) |_| {
-        if (pos + empty_block.len <= buf.len) {
-            @memcpy(buf[pos .. pos + empty_block.len], empty_block);
-            pos += empty_block.len;
+    if (truecolor and empty_cells > 0) {
+        // Set dim foreground for ░ chars so they match the partial block's BG
+        var dim_esc_buf: [32]u8 = undefined;
+        const dim_esc = std.fmt.bufPrint(&dim_esc_buf, "\x1b[38;2;{d};{d};{d}m", .{
+            empty_bg_r, empty_bg_g, empty_bg_b,
+        }) catch "";
+        if (pos + dim_esc.len <= buf.len) {
+            @memcpy(buf[pos .. pos + dim_esc.len], dim_esc);
+            pos += dim_esc.len;
+        }
+        for (0..empty_cells) |_| {
+            if (pos + empty_block.len <= buf.len) {
+                @memcpy(buf[pos .. pos + empty_block.len], empty_block);
+                pos += empty_block.len;
+            }
+        }
+        const reset2 = "\x1b[0m";
+        if (pos + reset2.len <= buf.len) {
+            @memcpy(buf[pos .. pos + reset2.len], reset2);
+            pos += reset2.len;
+        }
+    } else {
+        for (0..empty_cells) |_| {
+            if (pos + empty_block.len <= buf.len) {
+                @memcpy(buf[pos .. pos + empty_block.len], empty_block);
+                pos += empty_block.len;
+            }
         }
     }
 
@@ -479,36 +502,67 @@ fn renderAsciiBar(buf: []u8, start: usize, bar_width: usize, frac: f64) usize {
     return pos;
 }
 
+/// Compute the gradient color at a given cell position.
+/// Gradient: cyan(0,255,255) -> violet(128,0,255) -> magenta(255,0,255)
+fn gradientColor(cell_idx: usize, total_cells: usize) struct { r: u8, g: u8, b: u8 } {
+    const t: f64 = if (total_cells <= 1) 0.0 else @as(f64, @floatFromInt(cell_idx)) / @as(f64, @floatFromInt(total_cells - 1));
+
+    if (t <= 0.5) {
+        const t2 = t * 2.0;
+        return .{
+            .r = @intFromFloat(0.0 + 128.0 * t2),
+            .g = @intFromFloat(255.0 * (1.0 - t2)),
+            .b = 255,
+        };
+    } else {
+        const t2 = (t - 0.5) * 2.0;
+        return .{
+            .r = @intFromFloat(128.0 + 127.0 * t2),
+            .g = 0,
+            .b = 255,
+        };
+    }
+}
+
+/// The color used for the empty/unfilled portion of the bar (░ background).
+/// A dark gray that's visible but unobtrusive.
+const empty_bg_r: u8 = 60;
+const empty_bg_g: u8 = 60;
+const empty_bg_b: u8 = 60;
+
+/// Write a partial block character with foreground gradient color AND
+/// background color matching the empty bar region, so the gap in the
+/// partial character doesn't show the terminal's own background.
+fn writeColoredPartialBlock(buf: []u8, start: usize, block: []const u8, cell_idx: usize, total_cells: usize) usize {
+    var pos = start;
+    const c = gradientColor(cell_idx, total_cells);
+
+    // Set both FG (38) and BG (48) in one escape
+    var esc_buf: [64]u8 = undefined;
+    const esc = std.fmt.bufPrint(&esc_buf, "\x1b[38;2;{d};{d};{d};48;2;{d};{d};{d}m", .{
+        c.r, c.g, c.b,
+        empty_bg_r, empty_bg_g, empty_bg_b,
+    }) catch "";
+
+    if (pos + esc.len + block.len <= buf.len) {
+        @memcpy(buf[pos .. pos + esc.len], esc);
+        pos += esc.len;
+        @memcpy(buf[pos .. pos + block.len], block);
+        pos += block.len;
+    }
+
+    return pos;
+}
+
 /// Write a single colored block character with truecolor gradient.
 /// Gradient: cyan(0,255,255) -> violet(128,0,255) -> magenta(255,0,255)
 fn writeColoredBlock(buf: []u8, start: usize, block: []const u8, cell_idx: usize, total_cells: usize) usize {
     var pos = start;
-
-    // Calculate position in gradient [0.0, 1.0]
-    const t: f64 = if (total_cells <= 1) 0.0 else @as(f64, @floatFromInt(cell_idx)) / @as(f64, @floatFromInt(total_cells - 1));
-
-    // Interpolate color
-    var r: u8 = undefined;
-    var g: u8 = undefined;
-    var b: u8 = undefined;
-
-    if (t <= 0.5) {
-        // cyan(0,255,255) -> violet(128,0,255)
-        const t2 = t * 2.0;
-        r = @intFromFloat(0.0 + 128.0 * t2);
-        g = @intFromFloat(255.0 * (1.0 - t2));
-        b = 255;
-    } else {
-        // violet(128,0,255) -> magenta(255,0,255)
-        const t2 = (t - 0.5) * 2.0;
-        r = @intFromFloat(128.0 + 127.0 * t2);
-        g = 0;
-        b = 255;
-    }
+    const c = gradientColor(cell_idx, total_cells);
 
     // Write ANSI truecolor escape: \x1b[38;2;R;G;Bm
     var esc_buf: [32]u8 = undefined;
-    const esc = std.fmt.bufPrint(&esc_buf, "\x1b[38;2;{d};{d};{d}m", .{ r, g, b }) catch "";
+    const esc = std.fmt.bufPrint(&esc_buf, "\x1b[38;2;{d};{d};{d}m", .{ c.r, c.g, c.b }) catch "";
 
     if (pos + esc.len + block.len <= buf.len) {
         @memcpy(buf[pos .. pos + esc.len], esc);

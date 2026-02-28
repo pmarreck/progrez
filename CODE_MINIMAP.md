@@ -69,7 +69,7 @@ C FFI boundary layer. Bridges pure Zig core to C consumers. Manages render threa
 
 Internal:
 - `parseProgressEnv(val)` — parse PROGRESS env var ("true"/"1" -> true, "false"/"0" -> false)
-- `parseIntervalEnv(val)` — parse PROGREZ_INTERVAL as u32 ms (default 1000)
+- `parseIntervalEnv(val)` — parse PROGREZ_INTERVAL as u32 ms (default 100)
 - `getEnvVar(name)` — read environment variable
 - `getTerminalWidth()` — POSIX ioctl TIOCGWINSZ on stderr (default 80)
 - `readSnapshot(ctx)` — seqlock read: returns snapshot if consistent, null if write in progress

@@ -41,10 +41,10 @@ fn parseProgressEnv(val: ?[]const u8) ?bool {
     return null;
 }
 
-/// Parse PROGREZ_INTERVAL env var as u32 milliseconds. Default 1000.
+/// Parse PROGREZ_INTERVAL env var as u32 milliseconds. Default 100.
 fn parseIntervalEnv(val: ?[]const u8) u32 {
-    const v = val orelse return 1000;
-    return std.fmt.parseInt(u32, v, 10) catch 1000;
+    const v = val orelse return 100;
+    return std.fmt.parseInt(u32, v, 10) catch 100;
 }
 
 /// Read an environment variable. Returns null if not set.
@@ -363,8 +363,8 @@ test "ffi: parse progress env" {
 
 test "ffi: parse interval env" {
     try std.testing.expectEqual(@as(u32, 500), parseIntervalEnv("500"));
-    try std.testing.expectEqual(@as(u32, 1000), parseIntervalEnv(null));
-    try std.testing.expectEqual(@as(u32, 1000), parseIntervalEnv("garbage"));
+    try std.testing.expectEqual(@as(u32, 100), parseIntervalEnv(null));
+    try std.testing.expectEqual(@as(u32, 100), parseIntervalEnv("garbage"));
 }
 
 test "ffi: seqlock read returns null during write" {

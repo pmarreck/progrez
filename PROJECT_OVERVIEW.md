@@ -57,7 +57,7 @@ progrez_set_determinate(ctx, actual_total_files, actual_total_bytes);
 | Variable | Values | Effect |
 |---|---|---|
 | `PROGRESS` | `true`/`1`, `false`/`0` | Force progress on/off (overrides TTY detection) |
-| `PROGREZ_INTERVAL` | milliseconds (e.g. `500`) | Render interval (default: 1000ms) |
+| `PROGREZ_INTERVAL` | milliseconds (e.g. `500`) | Render interval (default: 100ms) |
 | `PROGREZ_STYLE` | `ascii` | Force ASCII mode (no Unicode, no color) |
 | `NO_COLOR` | any value | Disable all color output (respects no-color.org convention) |
 
