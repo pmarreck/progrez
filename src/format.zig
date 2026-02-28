@@ -122,6 +122,52 @@ pub fn formatThroughput(bytes_per_sec: f64, buf: []u8) []const u8 {
     return std.fmt.bufPrint(buf, "{d:.1} {s}", .{ val, units[unit_idx] }) catch "";
 }
 
+/// Sparkline block elements (8 levels, lowest to highest).
+const sparkline_blocks = [8][]const u8{
+    "\xe2\x96\x81", // ▁
+    "\xe2\x96\x82", // ▂
+    "\xe2\x96\x83", // ▃
+    "\xe2\x96\x84", // ▄
+    "\xe2\x96\x85", // ▅
+    "\xe2\x96\x86", // ▆
+    "\xe2\x96\x87", // ▇
+    "\xe2\x96\x88", // █
+};
+
+/// Format a sparkline from a rate history buffer.
+/// Normalizes values to min/max of the window, maps to 8 block levels.
+/// Returns empty slice if count == 0.
+pub fn formatSparkline(rates: *const [8]f64, count: u8, buf: []u8) []const u8 {
+    if (count == 0) return "";
+    const n: usize = @intCast(count);
+
+    // Find min/max
+    var min_rate: f64 = rates[0];
+    var max_rate: f64 = rates[0];
+    for (0..n) |i| {
+        if (rates[i] < min_rate) min_rate = rates[i];
+        if (rates[i] > max_rate) max_rate = rates[i];
+    }
+
+    var pos: usize = 0;
+    const range = max_rate - min_rate;
+
+    for (0..n) |i| {
+        const level: usize = if (range <= 0.0)
+            3 // middle level if all same
+        else
+            @min(@as(usize, @intFromFloat(((rates[i] - min_rate) / range) * 7.0)), 7);
+
+        const block = sparkline_blocks[level];
+        if (pos + block.len <= buf.len) {
+            @memcpy(buf[pos .. pos + block.len], block);
+            pos += block.len;
+        }
+    }
+
+    return buf[0..pos];
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────
 
 test "format: bytes to human readable" {
@@ -194,4 +240,28 @@ test "format: throughput" {
 
     // GB range
     try std.testing.expectEqualStrings("1.0 GB/s", formatThroughput(1_000_000_000.0, &buf));
+}
+
+test "format: sparkline" {
+    var buf: [32]u8 = undefined;
+
+    // Ascending rates
+    const rates1 = [8]f64{ 100, 200, 300, 400, 500, 600, 700, 800 };
+    const s1 = formatSparkline(&rates1, 8, &buf);
+    try std.testing.expectEqual(@as(usize, 24), s1.len); // 8 chars * 3 bytes each (UTF-8)
+
+    // All same rate = all same block
+    const rates2 = [8]f64{ 500, 500, 500, 500, 500, 500, 500, 500 };
+    const s2 = formatSparkline(&rates2, 8, &buf);
+    try std.testing.expectEqual(@as(usize, 24), s2.len);
+
+    // Partial buffer (only 3 entries)
+    const rates3 = [8]f64{ 100, 300, 200, 0, 0, 0, 0, 0 };
+    const s3 = formatSparkline(&rates3, 3, &buf);
+    try std.testing.expectEqual(@as(usize, 9), s3.len); // 3 chars * 3 bytes
+
+    // Zero entries
+    const rates4 = [8]f64{ 0, 0, 0, 0, 0, 0, 0, 0 };
+    const s4 = formatSparkline(&rates4, 0, &buf);
+    try std.testing.expectEqual(@as(usize, 0), s4.len);
 }
