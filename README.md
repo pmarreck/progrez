@@ -1,5 +1,8 @@
 # progrez
 
+[![CI](https://github.com/pmarreck/progrez/actions/workflows/ci.yml/badge.svg?branch=yolo)](https://github.com/pmarreck/progrez/actions)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 Unified progress indication library for CLI/TUI applications.
 
 Provides polished, professional progress bars that take advantage of modern
