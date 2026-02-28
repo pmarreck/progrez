@@ -101,6 +101,27 @@ pub fn formatElapsed(seconds: f64, buf: []u8) []const u8 {
     }
 }
 
+/// Format a throughput rate (bytes/sec) into a human-readable string.
+/// Examples: "0 B/s", "1.5 KB/s", "12.3 MB/s"
+pub fn formatThroughput(bytes_per_sec: f64, buf: []u8) []const u8 {
+    if (bytes_per_sec <= 0.0) {
+        const s = "0 B/s";
+        if (buf.len >= s.len) {
+            @memcpy(buf[0..s.len], s);
+            return buf[0..s.len];
+        }
+        return "";
+    }
+    const units = [_][]const u8{ "B/s", "KB/s", "MB/s", "GB/s", "TB/s" };
+    var val = bytes_per_sec;
+    var unit_idx: usize = 0;
+    while (val >= 1000.0 and unit_idx < units.len - 1) {
+        val /= 1000.0;
+        unit_idx += 1;
+    }
+    return std.fmt.bufPrint(buf, "{d:.1} {s}", .{ val, units[unit_idx] }) catch "";
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────
 
 test "format: bytes to human readable" {
@@ -154,4 +175,23 @@ test "format: elapsed time" {
     try std.testing.expectEqualStrings("23.45s", formatElapsed(23.45, &buf));
     try std.testing.expectEqualStrings("1m23s", formatElapsed(83.0, &buf));
     try std.testing.expectEqualStrings("1h0m0s", formatElapsed(3600.0, &buf));
+}
+
+test "format: throughput" {
+    var buf: [32]u8 = undefined;
+
+    // Zero
+    try std.testing.expectEqualStrings("0 B/s", formatThroughput(0.0, &buf));
+
+    // Bytes range
+    try std.testing.expectEqualStrings("500.0 B/s", formatThroughput(500.0, &buf));
+
+    // KB range
+    try std.testing.expectEqualStrings("1.5 KB/s", formatThroughput(1500.0, &buf));
+
+    // MB range
+    try std.testing.expectEqualStrings("12.3 MB/s", formatThroughput(12_300_000.0, &buf));
+
+    // GB range
+    try std.testing.expectEqualStrings("1.0 GB/s", formatThroughput(1_000_000_000.0, &buf));
 }
