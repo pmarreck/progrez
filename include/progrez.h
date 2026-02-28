@@ -37,6 +37,13 @@ void progrez_set_sparkline(progrez_ctx *ctx, _Bool enabled);
 /* Update the display label mid-operation. */
 void progrez_set_label(progrez_ctx *ctx, const char *label);
 
+/* Notification configuration */
+void progrez_set_notify(progrez_ctx *ctx, _Bool enabled);
+void progrez_set_notify_after(progrez_ctx *ctx, uint32_t seconds);
+
+typedef void (*progrez_notify_fn)(const char *message, void *userdata);
+void progrez_set_notify_callback(progrez_ctx *ctx, progrez_notify_fn fn, void *userdata);
+
 #ifdef __cplusplus
 }
 #endif

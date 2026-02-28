@@ -33,6 +33,12 @@ const FfiContext = struct {
     // Log mode tracking (non-TTY output)
     last_log_percent: i8, // -1 = no log yet
     last_log_time_ns: i128,
+    // Notification config
+    notify_mode: NotifyMode,
+    notify_after_secs: u32,
+    notify_method: NotifyMethod,
+    notify_callback: ?*const fn ([*:0]const u8, ?*anyopaque) void,
+    notify_userdata: ?*anyopaque,
 };
 
 // ── Env Var Parsing Helpers ─────────────────────────────────────────────
@@ -83,6 +89,78 @@ fn parseGradientEnv(val: ?[]const u8) ?GradientColors {
         const c1 = parseHexColor(first) orelse return null;
         const c2 = parseHexColor(rest) orelse return null;
         return .{ .start = c1, .mid = null, .end = c2 };
+    }
+}
+
+const NotifyMode = enum { auto, on, off };
+const NotifyMethod = enum { none, osascript, notify_send, bell };
+
+fn parseNotifyEnv(val: ?[]const u8) NotifyMode {
+    const v = val orelse return .auto;
+    if (std.mem.eql(u8, v, "true") or std.mem.eql(u8, v, "1")) return .on;
+    if (std.mem.eql(u8, v, "false") or std.mem.eql(u8, v, "0")) return .off;
+    return .auto;
+}
+
+fn parseNotifyAfterEnv(val: ?[]const u8) u32 {
+    const v = val orelse return 10;
+    return std.fmt.parseInt(u32, v, 10) catch 10;
+}
+
+/// Detect which notification method is available on this system.
+fn detectNotifyMethod() NotifyMethod {
+    if (comptime builtin.os.tag == .macos) {
+        return .osascript;
+    } else if (comptime builtin.os.tag == .linux) {
+        // Check if notify-send exists by trying to run "which notify-send"
+        var child = std.process.Child.init(&.{ "which", "notify-send" }, ffiAllocator());
+        child.stdout_behavior = .Ignore;
+        child.stderr_behavior = .Ignore;
+        const term = child.spawnAndWait() catch return .bell;
+        if (term == .Exited and term.Exited == 0) return .notify_send;
+        return .bell;
+    } else {
+        return .bell;
+    }
+}
+
+/// Send a system notification.
+fn sendNotification(method: NotifyMethod, message: []const u8, alloc: std.mem.Allocator) void {
+    switch (method) {
+        .osascript => {
+            // Build AppleScript command with escaped message
+            var escaped_buf: [1024]u8 = undefined;
+            var escaped_len: usize = 0;
+            for (message) |c| {
+                if (c == '"' or c == '\\') {
+                    if (escaped_len < escaped_buf.len) {
+                        escaped_buf[escaped_len] = '\\';
+                        escaped_len += 1;
+                    }
+                }
+                if (escaped_len < escaped_buf.len) {
+                    escaped_buf[escaped_len] = c;
+                    escaped_len += 1;
+                }
+            }
+            var script_buf: [1200]u8 = undefined;
+            const script = std.fmt.bufPrint(&script_buf, "display notification \"{s}\" with title \"progrez\"", .{escaped_buf[0..escaped_len]}) catch return;
+            var child = std.process.Child.init(&.{ "osascript", "-e", script }, alloc);
+            child.stdout_behavior = .Ignore;
+            child.stderr_behavior = .Ignore;
+            _ = child.spawnAndWait() catch {};
+        },
+        .notify_send => {
+            var child = std.process.Child.init(&.{ "notify-send", "progrez", message }, alloc);
+            child.stdout_behavior = .Ignore;
+            child.stderr_behavior = .Ignore;
+            _ = child.spawnAndWait() catch {};
+        },
+        .bell => {
+            const stderr_file: std.fs.File = .{ .handle = 2 };
+            stderr_file.writeAll("\x07") catch {};
+        },
+        .none => {},
     }
 }
 
@@ -258,6 +336,12 @@ export fn progrez_create(label: ?[*:0]const u8) ?*FfiContext {
         }
     }
 
+    const notify_env = getEnvVar("PROGREZ_NOTIFY");
+    const notify_after_env = getEnvVar("PROGREZ_NOTIFY_AFTER");
+    const notify_mode = parseNotifyEnv(if (notify_env) |e| @as([]const u8, e) else null);
+    const notify_after = parseNotifyAfterEnv(if (notify_after_env) |e| @as([]const u8, e) else null);
+    const notify_method: NotifyMethod = if (notify_mode != .off) detectNotifyMethod() else .none;
+
     ctx.* = .{
         .state = state,
         .caps = caps,
@@ -277,6 +361,11 @@ export fn progrez_create(label: ?[*:0]const u8) ?*FfiContext {
         .gradient = gradient,
         .last_log_percent = -1,
         .last_log_time_ns = now_ns,
+        .notify_mode = notify_mode,
+        .notify_after_secs = notify_after,
+        .notify_method = notify_method,
+        .notify_callback = null,
+        .notify_userdata = null,
     };
 
     // Spawn render thread if progress is enabled
@@ -350,6 +439,32 @@ export fn progrez_finish(ctx: ?*FfiContext) void {
                 stderr_file.writeAll("\r\x1b[2K") catch {};
             }
             stderr_file.writeAll(summary) catch {};
+        }
+
+        // Send notification if enabled and elapsed time exceeds threshold
+        const elapsed_secs = c.state.elapsedSeconds(now_ns);
+        const should_notify = switch (c.notify_mode) {
+            .on => true,
+            .off => false,
+            .auto => elapsed_secs >= @as(f64, @floatFromInt(c.notify_after_secs)),
+        };
+
+        if (should_notify) {
+            if (c.notify_callback) |cb| {
+                // Use callback if registered
+                const notify_msg = render.renderCompletionSummary(&c.state, now_ns, &summary_buf);
+                const msg_trimmed = std.mem.trimRight(u8, notify_msg, "\n");
+                var c_str_buf: [512]u8 = undefined;
+                if (msg_trimmed.len < c_str_buf.len) {
+                    @memcpy(c_str_buf[0..msg_trimmed.len], msg_trimmed);
+                    c_str_buf[msg_trimmed.len] = 0;
+                    cb(@ptrCast(&c_str_buf), c.notify_userdata);
+                }
+            } else if (c.notify_method != .none) {
+                const notify_msg = render.renderCompletionSummary(&c.state, now_ns, &summary_buf);
+                const msg_trimmed = std.mem.trimRight(u8, notify_msg, "\n");
+                sendNotification(c.notify_method, msg_trimmed, ffiAllocator());
+            }
         }
     }
 }
@@ -445,6 +560,29 @@ export fn progrez_set_label(ctx: ?*FfiContext, label: ?[*:0]const u8) void {
     c.state.setLabel(label_slice);
 }
 
+/// Enable or disable notifications.
+export fn progrez_set_notify(ctx: ?*FfiContext, enabled: bool) void {
+    const c = ctx orelse return;
+    c.notify_mode = if (enabled) .on else .off;
+}
+
+/// Set the notification time threshold in seconds.
+export fn progrez_set_notify_after(ctx: ?*FfiContext, seconds: u32) void {
+    const c = ctx orelse return;
+    c.notify_after_secs = seconds;
+}
+
+/// Set a notification callback. If set, the built-in notification is skipped.
+export fn progrez_set_notify_callback(
+    ctx: ?*FfiContext,
+    callback: ?*const fn ([*:0]const u8, ?*anyopaque) void,
+    userdata: ?*anyopaque,
+) void {
+    const c = ctx orelse return;
+    c.notify_callback = callback;
+    c.notify_userdata = userdata;
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────
 
 test "ffi: null ctx safety" {
@@ -460,6 +598,9 @@ test "ffi: null ctx safety" {
     progrez_set_gradient_2(null, 0, 0, 0, 0, 0, 0);
     progrez_set_sparkline(null, false);
     progrez_set_label(null, null);
+    progrez_set_notify(null, false);
+    progrez_set_notify_after(null, 0);
+    progrez_set_notify_callback(null, null, null);
 }
 
 test "ffi: parse progress env" {
@@ -587,4 +728,21 @@ test "ffi: shouldEmitLogLine respects 10% progress milestones" {
     // 20% progress: yes (decile 2 > 1)
     ctx.state.bytes_processed = 200;
     try std.testing.expect(shouldEmitLogLine(&ctx, 5 * std.time.ns_per_s));
+}
+
+test "ffi: parse notify env" {
+    try std.testing.expectEqual(NotifyMode.auto, parseNotifyEnv(null));
+    try std.testing.expectEqual(NotifyMode.on, parseNotifyEnv("true"));
+    try std.testing.expectEqual(NotifyMode.on, parseNotifyEnv("1"));
+    try std.testing.expectEqual(NotifyMode.off, parseNotifyEnv("false"));
+    try std.testing.expectEqual(NotifyMode.off, parseNotifyEnv("0"));
+    try std.testing.expectEqual(NotifyMode.auto, parseNotifyEnv("auto"));
+    try std.testing.expectEqual(NotifyMode.auto, parseNotifyEnv("garbage"));
+}
+
+test "ffi: parse notify after env" {
+    try std.testing.expectEqual(@as(u32, 10), parseNotifyAfterEnv(null));
+    try std.testing.expectEqual(@as(u32, 30), parseNotifyAfterEnv("30"));
+    try std.testing.expectEqual(@as(u32, 10), parseNotifyAfterEnv("garbage"));
+    try std.testing.expectEqual(@as(u32, 0), parseNotifyAfterEnv("0"));
 }
