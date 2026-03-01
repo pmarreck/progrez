@@ -231,8 +231,8 @@ fn renderLoop(ctx: *FfiContext) void {
         const snap = readSnapshot(ctx) orelse continue;
 
         // Apply snapshot to state
-        ctx.state.files_processed = snap.files_processed;
-        ctx.state.bytes_processed = snap.bytes_processed;
+        // IMPORTANT: recordUpdate must be called BEFORE overwriting bytes/files_processed,
+        // because it computes delta from the old values to calculate rates.
         if (snap.files_total) |ft| ctx.state.files_total = ft;
         if (snap.bytes_total) |bt| ctx.state.bytes_total = bt;
         ctx.state.recordUpdate(snap.bytes_processed, snap.files_processed, snap.timestamp_ns);
