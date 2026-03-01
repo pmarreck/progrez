@@ -24,10 +24,11 @@ int main(void) {
     progrez_set_identity(ctx, "progrez-demo", "demo directory scan");
     progrez_set_indeterminate(ctx);
     progrez_set_sparkline(ctx, 1);
+    progrez_set_notify(ctx, 1);  /* enable notifications for demo */
 
     for (uint64_t i = 0; i < 70; i++) {
         progrez_update(ctx, i + 1, (i + 1) * 150000);
-        SLEEP_MS(50);
+        SLEEP_MS(75);
     }
 
     /* Update label before switching to determinate mode */
@@ -41,7 +42,7 @@ int main(void) {
     for (uint64_t i = 0; i < total_files; i++) {
         progrez_update(ctx, i + 1, (i + 1) * 150000);
         /* Vary the sleep to produce interesting sparkline */
-        SLEEP_MS(15 + (i % 7) * 5);
+        SLEEP_MS(30 + (i % 7) * 8);
     }
 
     progrez_finish(ctx);

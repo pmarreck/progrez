@@ -65,10 +65,11 @@ end
 progrez.progrez_set_identity(ctx, "luajit-demo", "demo file scan")
 progrez.progrez_set_indeterminate(ctx)
 progrez.progrez_set_sparkline(ctx, true)
+progrez.progrez_set_notify(ctx, true)  -- enable notifications for demo
 
 for i = 1, 70 do
     progrez.progrez_update(ctx, i, i * 150000)
-    sleep_ms(50)
+    sleep_ms(75)
 end
 
 -- Update label before switching to determinate mode
@@ -82,7 +83,7 @@ progrez.progrez_set_determinate(ctx, total_files, total_bytes)
 for i = 1, total_files do
     progrez.progrez_update(ctx, i, i * 150000)
     -- Vary the sleep to produce interesting sparkline
-    sleep_ms(15 + (i % 7) * 5)
+    sleep_ms(30 + (i % 7) * 8)
 end
 
 progrez.progrez_finish(ctx)
