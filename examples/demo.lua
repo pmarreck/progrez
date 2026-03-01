@@ -64,9 +64,10 @@ end
 
 progrez.progrez_set_identity(ctx, "luajit-demo", "demo file scan")
 progrez.progrez_set_indeterminate(ctx)
+progrez.progrez_set_sparkline(ctx, true)
 
 for i = 1, 70 do
-    progrez.progrez_update(ctx, i, i * 1024)
+    progrez.progrez_update(ctx, i, i * 150000)
     sleep_ms(50)
 end
 
@@ -74,11 +75,14 @@ end
 progrez.progrez_set_label(ctx, "Processing")
 
 -- Phase 2: Determinate (processing)
-progrez.progrez_set_determinate(ctx, 200, 200 * 1024)
+local total_files = 200
+local total_bytes = total_files * 150000  -- ~30 MB
+progrez.progrez_set_determinate(ctx, total_files, total_bytes)
 
-for i = 1, 200 do
-    progrez.progrez_update(ctx, i, i * 1024)
-    sleep_ms(25)
+for i = 1, total_files do
+    progrez.progrez_update(ctx, i, i * 150000)
+    -- Vary the sleep to produce interesting sparkline
+    sleep_ms(15 + (i % 7) * 5)
 end
 
 progrez.progrez_finish(ctx)

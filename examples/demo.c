@@ -23,9 +23,10 @@ int main(void) {
     }
     progrez_set_identity(ctx, "progrez-demo", "demo directory scan");
     progrez_set_indeterminate(ctx);
+    progrez_set_sparkline(ctx, 1);
 
     for (uint64_t i = 0; i < 70; i++) {
-        progrez_update(ctx, i + 1, (i + 1) * 1024);
+        progrez_update(ctx, i + 1, (i + 1) * 150000);
         SLEEP_MS(50);
     }
 
@@ -33,11 +34,14 @@ int main(void) {
     progrez_set_label(ctx, "Processing");
 
     /* Phase 2: Determinate (processing) */
-    progrez_set_determinate(ctx, 200, 200 * 1024);
+    uint64_t total_files = 200;
+    uint64_t total_bytes = total_files * 150000;  /* ~30 MB */
+    progrez_set_determinate(ctx, total_files, total_bytes);
 
-    for (uint64_t i = 0; i < 200; i++) {
-        progrez_update(ctx, i + 1, (i + 1) * 1024);
-        SLEEP_MS(25);
+    for (uint64_t i = 0; i < total_files; i++) {
+        progrez_update(ctx, i + 1, (i + 1) * 150000);
+        /* Vary the sleep to produce interesting sparkline */
+        SLEEP_MS(15 + (i % 7) * 5);
     }
 
     progrez_finish(ctx);
