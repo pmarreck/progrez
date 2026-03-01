@@ -41,12 +41,19 @@ pub fn build(b: *std.Build) void {
     // Install C header for downstream C/FFI consumers
     b.installFile("include/progrez.h", "include/progrez.h");
 
-    // Expose module for downstream Zig consumers
+    // Expose module for downstream Zig consumers (full lib including FFI)
     _ = b.addModule("progrez", .{
         .root_source_file = b.path("src/lib.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
+    });
+
+    // Pure-logic module for downstream Zig consumers (no FFI, no C symbols)
+    _ = b.addModule("progrez_core", .{
+        .root_source_file = b.path("src/core_lib.zig"),
+        .target = target,
+        .optimize = optimize,
     });
 
     // --- C demo executable ---
