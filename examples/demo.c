@@ -1,5 +1,7 @@
 /* progrez demo — exercises the C FFI. */
 
+#define _DEFAULT_SOURCE  /* usleep() on glibc with -std=c11 */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
