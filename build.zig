@@ -32,7 +32,7 @@ pub fn build(b: *std.Build) void {
     });
 
     const dylib = b.addLibrary(.{
-        .name = "progrez",
+        .name = "progrez_shared",
         .linkage = .dynamic,
         .root_module = dylib_module,
     });
