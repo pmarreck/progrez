@@ -28,6 +28,10 @@ const FfiContext = struct {
     // Config
     progress_enabled: bool,
     is_tty: bool,
+    /// Manual render mode: caller drives rendering via progrez_render_line().
+    /// Set automatically when progrez_render_line() is called before progrez_update().
+    /// Prevents the render thread from being spawned.
+    manual_mode: bool,
     // Gradient colors for the progress bar
     gradient: GradientColors,
     // Log mode tracking (non-TTY output)
@@ -358,6 +362,7 @@ export fn progrez_create(label: ?[*:0]const u8) ?*FfiContext {
         .generation = std.atomic.Value(u32).init(0),
         .progress_enabled = progress_enabled,
         .is_tty = is_tty,
+        .manual_mode = false,
         .gradient = gradient,
         .last_log_percent = -1,
         .last_log_time_ns = now_ns,
@@ -368,94 +373,28 @@ export fn progrez_create(label: ?[*:0]const u8) ?*FfiContext {
         .notify_userdata = null,
     };
 
-    // Spawn render thread if progress is enabled
-    if (progress_enabled) {
-        ctx.render_thread = std.Thread.spawn(.{}, renderLoop, .{ctx}) catch null;
-    }
-
-    return ctx;
-}
-
-/// Create a progress context in manual-render mode (no render thread).
-/// The caller is responsible for calling progrez_render_line() to render.
-/// Use this for scroll-region or custom cursor-positioned rendering.
-export fn progrez_create_manual(label: ?[*:0]const u8) ?*FfiContext {
-    const alloc = ffiAllocator();
-    const ctx = alloc.create(FfiContext) catch return null;
-
-    const label_slice: []const u8 = if (label) |l| std.mem.span(l) else "Progress";
-
-    // Read env vars (same as progrez_create)
-    const style_env = getEnvVar("PROGREZ_STYLE");
-    const no_color_env = getEnvVar("NO_COLOR");
-    const colorterm_env = getEnvVar("COLORTERM");
-    const term_env = getEnvVar("TERM");
-    const wt_session_env = getEnvVar("WT_SESSION");
-    const gradient_env = getEnvVar("PROGREZ_GRADIENT");
-    const gradient = parseGradientEnv(if (gradient_env) |e| @as([]const u8, e) else null) orelse GradientColors.default;
-
-    const is_tty = std.posix.isatty(2);
-    const width: u16 = if (is_tty) getTerminalWidth() else 80;
-
-    const caps = terminal.TerminalCaps.detect(.{
-        .progrez_style = if (style_env) |e| @as([]const u8, e) else null,
-        .no_color = if (no_color_env) |e| @as([]const u8, e) else null,
-        .colorterm = if (colorterm_env) |e| @as([]const u8, e) else null,
-        .term = if (term_env) |e| @as([]const u8, e) else null,
-        .wt_session = if (wt_session_env) |e| @as([]const u8, e) else null,
-        .is_tty = is_tty,
-        .width = width,
-    });
-
-    const now_ns = std.time.nanoTimestamp();
-
-    var state = core.ProgrezState.init(label_slice);
-    state.start_time_ns = now_ns;
-    state.last_update_ns = now_ns;
-
-    const sparkline_env = getEnvVar("PROGREZ_SPARKLINE");
-    if (sparkline_env) |e| {
-        if (std.mem.eql(u8, @as([]const u8, e), "true") or std.mem.eql(u8, @as([]const u8, e), "1")) {
-            state.sparkline_enabled = true;
-        }
-    }
-
-    ctx.* = .{
-        .state = state,
-        .caps = caps,
-        .interval_ms = 100,
-        .render_thread = null, // No render thread in manual mode
-        .stop_flag = std.atomic.Value(bool).init(false),
-        .snapshot = .{
-            .files_processed = 0,
-            .files_total = null,
-            .bytes_processed = 0,
-            .bytes_total = null,
-            .timestamp_ns = now_ns,
-        },
-        .generation = std.atomic.Value(u32).init(0),
-        .progress_enabled = true,
-        .is_tty = is_tty,
-        .gradient = gradient,
-        .last_log_percent = -1,
-        .last_log_time_ns = now_ns,
-        .notify_mode = .off,
-        .notify_after_secs = 10,
-        .notify_method = .none,
-        .notify_callback = null,
-        .notify_userdata = null,
-    };
-
+    // Render thread is spawned lazily on first progrez_update() call,
+    // unless manual_mode is set (via progrez_render_line()).
     return ctx;
 }
 
 /// Render the current progress bar into a caller-provided buffer.
 /// Returns the number of bytes written (not null-terminated).
-/// For manual-render contexts (created via progrez_create_manual),
-/// this applies the latest snapshot and renders a single frame.
+/// On first call, sets manual_mode to prevent the render thread from starting.
+/// The caller is responsible for calling this at their own cadence.
 export fn progrez_render_line(ctx: ?*FfiContext, buf: [*]u8, buf_size: usize, width: u16) usize {
     const c = ctx orelse return 0;
     if (buf_size == 0) return 0;
+
+    // Enter manual mode: prevent render thread from starting (or stop it if already running)
+    if (!c.manual_mode) {
+        c.manual_mode = true;
+        if (c.render_thread) |thread| {
+            c.stop_flag.store(true, .release);
+            thread.join();
+            c.render_thread = null;
+        }
+    }
 
     // Apply latest snapshot to state
     const now_ns = std.time.nanoTimestamp();
@@ -488,9 +427,15 @@ export fn progrez_destroy(ctx: ?*FfiContext) void {
 
 /// Update progress counters. Uses seqlock for thread-safe snapshot passing.
 /// files_processed and bytes_processed are absolute (cumulative) values.
+/// On first call, spawns the render thread (unless manual_mode is active).
 export fn progrez_update(ctx: ?*FfiContext, files_processed: u64, bytes_processed: u64) void {
     const c = ctx orelse return;
     const now_ns = std.time.nanoTimestamp();
+
+    // Lazily spawn render thread on first update
+    if (c.render_thread == null and c.progress_enabled and !c.manual_mode) {
+        c.render_thread = std.Thread.spawn(.{}, renderLoop, .{c}) catch null;
+    }
 
     // Seqlock write: odd generation = write in progress
     const gen = c.generation.load(.monotonic);
