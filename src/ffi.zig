@@ -250,21 +250,12 @@ fn renderLoop(ctx: *FfiContext) void {
             // Advance spinner frame
             ctx.state.spinner_frame +%= 1;
 
-            // Render the progress line
+            // Render the progress line (already padded to terminal width)
             const line = render.renderLine(&ctx.state, ctx.caps, now_ns, &render_buf, ctx.gradient);
             if (line.len > 0) {
                 const stderr_file: std.fs.File = .{ .handle = 2 };
-                // Overwrite previous line with \r
                 stderr_file.writeAll("\r") catch {};
                 stderr_file.writeAll(line) catch {};
-                // Pad with spaces to clear leftover chars from a previously wider line
-                const width: usize = @intCast(ctx.caps.width);
-                if (line.len < width) {
-                    var pad_buf: [256]u8 = undefined;
-                    const pad_len = @min(width - line.len, pad_buf.len);
-                    @memset(pad_buf[0..pad_len], ' ');
-                    stderr_file.writeAll(pad_buf[0..pad_len]) catch {};
-                }
             }
         } else {
             // Log mode: emit line every 10s or 10% progress

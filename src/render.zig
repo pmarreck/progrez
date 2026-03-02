@@ -647,12 +647,32 @@ fn writeColoredBlock(buf: []u8, start: usize, block: []const u8, cell_idx: usize
 
 /// Top-level render dispatcher: selects the correct renderer based on mode.
 /// Returns a slice of `buf` containing the rendered line, or empty for idle.
+/// Count display columns in a UTF-8 string.
+/// Assumes all codepoints are single-width (valid for ASCII, braille, block elements).
+fn countDisplayCols(s: []const u8) usize {
+    var cols: usize = 0;
+    for (s) |byte| {
+        if (byte & 0xC0 != 0x80) cols += 1;
+    }
+    return cols;
+}
+
 pub fn renderLine(state: *const core.ProgrezState, caps: terminal.TerminalCaps, now_ns: i128, buf: []u8, gradient: GradientColors) []const u8 {
-    return switch (state.mode) {
-        .idle => "",
+    const content = switch (state.mode) {
+        .idle => return "",
         .indeterminate => renderIndeterminate(state, caps, buf),
         .determinate => renderDeterminate(state, caps, now_ns, buf, gradient),
     };
+    // Pad with spaces to fill the terminal width so that mode switches
+    // (e.g. determinate → indeterminate) don't leave leftover characters.
+    const width: usize = @intCast(caps.width);
+    const display_cols = countDisplayCols(content);
+    if (display_cols < width and content.len + (width - display_cols) <= buf.len) {
+        const pad = width - display_cols;
+        @memset(buf[content.len .. content.len + pad], ' ');
+        return buf[0 .. content.len + pad];
+    }
+    return content;
 }
 
 /// Render a persistent completion summary line into `buf`.
@@ -1552,16 +1572,48 @@ test "scenario: 100% shows spinner, percentage clamped on overshoot" {
     try std.testing.expect(std.mem.indexOf(u8, overshoot, "\xe2\xa0\x8b") != null);
 }
 
-/// Count display columns in a UTF-8 string.
-/// Assumes all codepoints are single-width (valid for ASCII, braille, block elements).
-fn countDisplayColumns(s: []const u8) usize {
-    var cols: usize = 0;
-    for (s) |byte| {
-        // Count only lead bytes (ASCII 0x00-0x7F or multi-byte lead 0xC0-0xFF)
-        // Skip continuation bytes (0x80-0xBF)
-        if (byte & 0xC0 != 0x80) cols += 1;
+// Alias for tests (matches the non-test function name used by renderLine)
+const countDisplayColumns = countDisplayCols;
+
+test "scenario: renderLine always fills exactly terminal width" {
+    // After a mode switch (determinate → indeterminate), leftover characters
+    // from the longer previous line are visible if the new line is shorter.
+    // Fix: renderLine must always pad to exactly the terminal width.
+    const w: u16 = 80;
+    var buf: [4096]u8 = undefined;
+
+    // Determinate line at 50%
+    {
+        var state = core.ProgrezState.init("Processing");
+        state.start_time_ns = 0;
+        state.last_update_ns = 0;
+        state.setDeterminate(100, 10_000_000);
+        for (1..4) |i| {
+            state.recordUpdate(@intCast(i * 1_000_000), @intCast(i * 10), @intCast(i * std.time.ns_per_s));
+        }
+        const line = renderLine(&state, testCaps(w), 3 * std.time.ns_per_s, &buf, GradientColors.default);
+        const cols = countDisplayColumns(line);
+        if (cols != w) {
+            std.debug.print("\nDETERMINATE: expected {d} cols, got {d}, line=|{s}|\n", .{ w, cols, line });
+        }
+        try std.testing.expectEqual(@as(usize, w), cols);
     }
-    return cols;
+
+    // Indeterminate line (shorter content — must still pad to width)
+    {
+        var state = core.ProgrezState.init("Scanning");
+        state.start_time_ns = 0;
+        state.last_update_ns = 0;
+        state.setIndeterminate();
+        state.recordUpdate(5000, 10, 1 * std.time.ns_per_s);
+        state.spinner_frame = 3;
+        const line = renderLine(&state, testCaps(w), 1 * std.time.ns_per_s, &buf, GradientColors.default);
+        const cols = countDisplayColumns(line);
+        if (cols != w) {
+            std.debug.print("\nINDETERMINATE: expected {d} cols, got {d}, line=|{s}|\n", .{ w, cols, line });
+        }
+        try std.testing.expectEqual(@as(usize, w), cols);
+    }
 }
 
 test "scenario: 100% with spinner does not exceed terminal width" {
