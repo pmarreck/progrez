@@ -179,8 +179,10 @@ pub fn renderDeterminate(state: *const core.ProgrezState, caps: terminal.Termina
         chosen_stats = chosen_stats_buf[0..stats_len];
 
         // Calculate bar width
-        // Layout: "{label} {bar}  {stats}" or "{label} {bar}" if no stats
-        const overhead = label_len + 1 + (if (stats_len > 0) stats_len + 2 else @as(usize, 0));
+        // Layout: "{label} {bar} [spinner]  {stats}" or "{label} {bar}" if no stats
+        // Reserve 2 display columns for spinner (" ⠋") when at 100%
+        const spinner_cols: usize = if (pct_frac >= 1.0) 2 else 0;
+        const overhead = label_len + 1 + spinner_cols + (if (stats_len > 0) stats_len + 2 else @as(usize, 0));
         if (overhead >= width) {
             // Not even enough room for label + overhead, try dropping more
             if (level == .none) {
@@ -1548,4 +1550,40 @@ test "scenario: 100% shows spinner, percentage clamped on overshoot" {
     try std.testing.expect(std.mem.indexOf(u8, overshoot, "120.0%") == null);
     // Spinner still present
     try std.testing.expect(std.mem.indexOf(u8, overshoot, "\xe2\xa0\x8b") != null);
+}
+
+/// Count display columns in a UTF-8 string.
+/// Assumes all codepoints are single-width (valid for ASCII, braille, block elements).
+fn countDisplayColumns(s: []const u8) usize {
+    var cols: usize = 0;
+    for (s) |byte| {
+        // Count only lead bytes (ASCII 0x00-0x7F or multi-byte lead 0xC0-0xFF)
+        // Skip continuation bytes (0x80-0xBF)
+        if (byte & 0xC0 != 0x80) cols += 1;
+    }
+    return cols;
+}
+
+test "scenario: 100% with spinner does not exceed terminal width" {
+    const widths = [_]u16{ 80, 120, 60, 40 };
+    for (widths) |w| {
+        var state = core.ProgrezState.init("Building");
+        state.start_time_ns = 0;
+        state.last_update_ns = 0;
+        state.setDeterminate(50, 5_000_000);
+
+        for (1..6) |i| {
+            state.recordUpdate(@intCast(i * 1_000_000), @intCast(i * 10), @intCast(i * std.time.ns_per_s));
+        }
+
+        var buf: [4096]u8 = undefined;
+        const line = renderLine(&state, testCaps(w), 5 * std.time.ns_per_s, &buf, GradientColors.default);
+        const display_cols = countDisplayColumns(line);
+
+        // The rendered line's display width must never exceed the terminal width
+        if (display_cols > w) {
+            std.debug.print("\nWIDTH OVERFLOW: terminal={d}, rendered={d}, line=|{s}|\n", .{ w, display_cols, line });
+        }
+        try std.testing.expect(display_cols <= w);
+    }
 }
