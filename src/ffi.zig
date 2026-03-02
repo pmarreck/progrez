@@ -14,6 +14,16 @@ fn ffiAllocator() std.mem.Allocator {
     return std.heap.c_allocator;
 }
 
+/// Cross-platform stderr file handle.
+fn stderrFile() std.fs.File {
+    return std.fs.File.stderr();
+}
+
+/// Cross-platform isatty check for stderr.
+fn stderrIsAtty() bool {
+    return stderrFile().isTty();
+}
+
 /// Opaque context handle exposed to C as `progrez_ctx*`.
 /// Contains all state needed for progress tracking and rendering.
 const FfiContext = struct {
@@ -161,7 +171,7 @@ fn sendNotification(method: NotifyMethod, message: []const u8, alloc: std.mem.Al
             _ = child.spawnAndWait() catch {};
         },
         .bell => {
-            const stderr_file: std.fs.File = .{ .handle = 2 };
+            const stderr_file = stderrFile();
             stderr_file.writeAll("\x07") catch {};
         },
         .none => {},
@@ -170,7 +180,13 @@ fn sendNotification(method: NotifyMethod, message: []const u8, alloc: std.mem.Al
 
 /// Read an environment variable. Returns null if not set.
 fn getEnvVar(name: [:0]const u8) ?[:0]const u8 {
-    return std.posix.getenv(name);
+    if (comptime builtin.os.tag == .windows) {
+        // std.posix.getenv unavailable on Windows (WTF-16 env strings).
+        // For now, skip env-var reading on Windows; features degrade gracefully.
+        return null;
+    } else {
+        return std.posix.getenv(name);
+    }
 }
 
 // ── Terminal Width Detection ────────────────────────────────────────────
@@ -253,7 +269,7 @@ fn renderLoop(ctx: *FfiContext) void {
             // Render the progress line (already padded to terminal width)
             const line = render.renderLine(&ctx.state, ctx.caps, now_ns, &render_buf, ctx.gradient);
             if (line.len > 0) {
-                const stderr_file: std.fs.File = .{ .handle = 2 };
+                const stderr_file = stderrFile();
                 stderr_file.writeAll("\r") catch {};
                 stderr_file.writeAll(line) catch {};
             }
@@ -262,7 +278,7 @@ fn renderLoop(ctx: *FfiContext) void {
             if (shouldEmitLogLine(ctx, now_ns)) {
                 const line = render.renderLogLine(&ctx.state, now_ns, &render_buf);
                 if (line.len > 0) {
-                    const stderr_file: std.fs.File = .{ .handle = 2 };
+                    const stderr_file = stderrFile();
                     stderr_file.writeAll(line) catch {};
                 }
             }
@@ -297,7 +313,7 @@ export fn progrez_create(label: ?[*:0]const u8) ?*FfiContext {
     const gradient = parseGradientEnv(if (gradient_env) |e| @as([]const u8, e) else null) orelse GradientColors.default;
 
     // Detect TTY on stderr (fd 2)
-    const is_tty = std.posix.isatty(2);
+    const is_tty = stderrIsAtty();
 
     // Determine terminal width
     const width: u16 = if (is_tty) getTerminalWidth() else 80;
@@ -468,7 +484,7 @@ export fn progrez_finish(ctx: ?*FfiContext) void {
         var summary_buf: [1024]u8 = undefined;
         const summary = render.renderCompletionSummary(&c.state, now_ns, &summary_buf);
         if (summary.len > 0) {
-            const stderr_file: std.fs.File = .{ .handle = 2 };
+            const stderr_file = stderrFile();
             if (c.is_tty) {
                 // Clear the progress line first
                 stderr_file.writeAll("\r\x1b[2K") catch {};
