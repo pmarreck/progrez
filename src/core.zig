@@ -234,15 +234,18 @@ pub const ProgrezState = struct {
 
     /// Calculate completion percentage as a value in [0.0, 1.0].
     /// Returns null if no total is known.
+    /// Calculate completion percentage as a value in [0.0, 1.0].
+    /// Clamped to 1.0 even if processed exceeds total (overshoot).
+    /// Returns null if no total is known.
     pub fn percentComplete(self: *const ProgrezState) ?f64 {
         if (self.bytes_total) |total| {
             if (total > 0) {
-                return @as(f64, @floatFromInt(self.bytes_processed)) / @as(f64, @floatFromInt(total));
+                return @min(1.0, @as(f64, @floatFromInt(self.bytes_processed)) / @as(f64, @floatFromInt(total)));
             }
         }
         if (self.files_total) |total| {
             if (total > 0) {
-                return @as(f64, @floatFromInt(self.files_processed)) / @as(f64, @floatFromInt(total));
+                return @min(1.0, @as(f64, @floatFromInt(self.files_processed)) / @as(f64, @floatFromInt(total)));
             }
         }
         return null;

@@ -236,6 +236,27 @@ pub fn renderDeterminate(state: *const core.ProgrezState, caps: terminal.Termina
         pos = renderAsciiBar(buf, pos, chosen_bar_width, pct_frac);
     }
 
+    // Show spinner after bar when at 100% (indicates still processing)
+    if (pct_frac >= 1.0) {
+        if (caps.unicode) {
+            const frame_idx = state.spinner_frame % braille_spinner.len;
+            const frame = braille_spinner[frame_idx];
+            if (pos + 1 + frame.len <= buf.len) {
+                buf[pos] = ' ';
+                pos += 1;
+                @memcpy(buf[pos .. pos + frame.len], frame);
+                pos += frame.len;
+            }
+        } else {
+            const frame_idx = state.spinner_frame % ascii_spinner.len;
+            if (pos + 2 <= buf.len) {
+                buf[pos] = ' ';
+                buf[pos + 1] = ascii_spinner[frame_idx];
+                pos += 2;
+            }
+        }
+    }
+
     // Space + stats
     if (chosen_stats.len > 0) {
         if (pos + 2 + chosen_stats.len <= buf.len) {
@@ -1300,4 +1321,231 @@ test "render: determinate bar shows sparkline when enabled" {
     // Should contain sparkline lower block chars (▁ = \xe2\x96\x81)
     // This char is NOT used by the progress bar itself, so it can only come from sparkline
     try std.testing.expect(std.mem.indexOf(u8, line, "\xe2\x96\x81") != null);
+}
+
+// ── Scenario Tests ──────────────────────────────────────────────────────
+// These tests simulate realistic progress sequences using recordUpdate()
+// with injected timestamps, then assert on the rendered output.
+
+/// Helper: plain unicode terminal caps at a given width (no color escapes to simplify assertions).
+fn testCaps(width: u16) terminal.TerminalCaps {
+    return .{
+        .is_tty = true,
+        .unicode = true,
+        .truecolor = false,
+        .color_256 = false,
+        .color_16 = false,
+        .width = width,
+    };
+}
+
+test "scenario: 50% progress at 2 MB/s shows throughput and ETA" {
+    var state = core.ProgrezState.init("Copying");
+    state.start_time_ns = 0;
+    state.last_update_ns = 0;
+    state.setDeterminate(100, 20_000_000);
+
+    var t: i128 = 0;
+    for (1..6) |i| {
+        t += std.time.ns_per_s;
+        state.recordUpdate(@intCast(i * 2_000_000), @intCast(i * 10), t);
+    }
+
+    var buf: [4096]u8 = undefined;
+    const line = renderLine(&state, testCaps(120), t, &buf, GradientColors.default);
+
+    try std.testing.expect(std.mem.indexOf(u8, line, "Copying") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "50.0%") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "50/100 files") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "10.0 MB/20.0 MB") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "2.0 MB/s") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "ETA 0:05") != null);
+}
+
+test "scenario: sparkline with varying rates" {
+    var state = core.ProgrezState.init("Compressing");
+    state.start_time_ns = 0;
+    state.last_update_ns = 0;
+    state.setDeterminate(200, 30_000_000);
+    state.sparkline_enabled = true;
+
+    const rates = [_]u64{ 500_000, 1_000_000, 3_000_000, 2_000_000, 4_000_000, 1_500_000, 5_000_000, 3_500_000 };
+    var cumulative_bytes: u64 = 0;
+    var t: i128 = 0;
+    for (rates, 1..) |bytes_this_interval, i| {
+        t += std.time.ns_per_s;
+        cumulative_bytes += bytes_this_interval;
+        state.recordUpdate(cumulative_bytes, @intCast(i * 25), t);
+    }
+
+    var buf: [4096]u8 = undefined;
+    const line = renderLine(&state, testCaps(140), t, &buf, GradientColors.default);
+
+    try std.testing.expect(std.mem.indexOf(u8, line, "Compressing") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "68.3%") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "200/200 files") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "3.1 MB/s") != null);
+    // Sparkline contains block elements (▁ through █)
+    try std.testing.expect(std.mem.indexOf(u8, line, "\xe2\x96\x81") != null); // ▁
+    try std.testing.expect(std.mem.indexOf(u8, line, "ETA 0:03") != null);
+}
+
+test "scenario: ETA decreases as progress advances" {
+    var state = core.ProgrezState.init("Downloading");
+    state.start_time_ns = 0;
+    state.last_update_ns = 0;
+    state.setDeterminate(0, 10_000_000);
+
+    for (1..4) |i| {
+        state.recordUpdate(@intCast(i * 1_000_000), 0, @intCast(i * std.time.ns_per_s));
+    }
+
+    var buf: [4096]u8 = undefined;
+    const line_early = renderLine(&state, testCaps(100), 3 * std.time.ns_per_s, &buf, GradientColors.default);
+    try std.testing.expect(std.mem.indexOf(u8, line_early, "30.0%") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line_early, "1.0 MB/s") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line_early, "ETA 0:07") != null);
+
+    for (4..9) |i| {
+        state.recordUpdate(@intCast(i * 1_000_000), 0, @intCast(i * std.time.ns_per_s));
+    }
+
+    const line_late = renderLine(&state, testCaps(100), 8 * std.time.ns_per_s, &buf, GradientColors.default);
+    try std.testing.expect(std.mem.indexOf(u8, line_late, "80.0%") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line_late, "ETA 0:02") != null);
+}
+
+test "scenario: log mode shows all stats" {
+    var state = core.ProgrezState.init("Indexing");
+    state.start_time_ns = 0;
+    state.last_update_ns = 0;
+    state.setDeterminate(500, 50_000_000);
+
+    for (1..6) |i| {
+        state.recordUpdate(@intCast(i * 5_000_000), @intCast(i * 50), @intCast(i * std.time.ns_per_s));
+    }
+
+    var buf: [4096]u8 = undefined;
+    const line = renderLogLine(&state, 5 * std.time.ns_per_s, &buf);
+
+    try std.testing.expect(std.mem.indexOf(u8, line, "[progrez] Indexing 50% 250/500 files 25.0 MB/50.0 MB 5.0 MB/s ETA 0:05") != null);
+}
+
+test "scenario: narrow terminal drops stats progressively" {
+    var state = core.ProgrezState.init("Sync");
+    state.start_time_ns = 0;
+    state.last_update_ns = 0;
+    state.setDeterminate(100, 10_000_000);
+    state.sparkline_enabled = true;
+
+    for (1..6) |i| {
+        state.recordUpdate(@intCast(i * 1_000_000), @intCast(i * 10), @intCast(i * std.time.ns_per_s));
+    }
+    for (0..8) |i| {
+        state.rate_history[i] = @as(f64, @floatFromInt(i + 1)) * 200_000.0;
+    }
+    state.rate_history_len = 8;
+
+    var buf: [4096]u8 = undefined;
+
+    // Wide (140): all stats including sparkline and ETA
+    const wide = renderLine(&state, testCaps(140), 5 * std.time.ns_per_s, &buf, GradientColors.default);
+    try std.testing.expect(std.mem.indexOf(u8, wide, "ETA") != null);
+    try std.testing.expect(std.mem.indexOf(u8, wide, "MB/s") != null);
+    try std.testing.expect(std.mem.indexOf(u8, wide, "\xe2\x96\x81") != null); // sparkline
+
+    // Medium (80): drops ETA, sparkline, throughput
+    const med = renderLine(&state, testCaps(80), 5 * std.time.ns_per_s, &buf, GradientColors.default);
+    try std.testing.expect(std.mem.indexOf(u8, med, "50.0%") != null);
+    try std.testing.expect(std.mem.indexOf(u8, med, "5.0 MB/10.0 MB") != null);
+    try std.testing.expect(std.mem.indexOf(u8, med, "ETA") == null);
+
+    // Narrow (40): drops bytes too, keeps files + pct
+    const narrow = renderLine(&state, testCaps(40), 5 * std.time.ns_per_s, &buf, GradientColors.default);
+    try std.testing.expect(std.mem.indexOf(u8, narrow, "50.0%") != null);
+    try std.testing.expect(std.mem.indexOf(u8, narrow, "50/100 files") != null);
+    try std.testing.expect(std.mem.indexOf(u8, narrow, "MB/s") == null);
+
+    // Very narrow (30): only pct
+    const tiny = renderLine(&state, testCaps(30), 5 * std.time.ns_per_s, &buf, GradientColors.default);
+    try std.testing.expect(std.mem.indexOf(u8, tiny, "50.0%") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tiny, "files") == null);
+}
+
+test "scenario: completion summary with identity" {
+    var state = core.ProgrezState.init("Archiving");
+    state.start_time_ns = 0;
+    state.last_update_ns = 0;
+    state.setDeterminate(100, 10_000_000);
+    state.setIdentity("z7z", "compressing /data");
+
+    for (1..11) |i| {
+        state.recordUpdate(@intCast(i * 1_000_000), @intCast(i * 10), @intCast(i * std.time.ns_per_s));
+    }
+
+    var buf: [1024]u8 = undefined;
+    const summary = renderCompletionSummary(&state, 10 * std.time.ns_per_s, &buf);
+
+    try std.testing.expect(std.mem.indexOf(u8, summary, "z7z completed: compressing /data in 10.00s (100 files, 10.0 MB)") != null);
+}
+
+test "scenario: 100% spinner rotates through braille frames" {
+    var state = core.ProgrezState.init("Finishing");
+    state.start_time_ns = 0;
+    state.last_update_ns = 0;
+    state.setDeterminate(0, 10_000_000);
+
+    for (1..6) |i| {
+        state.recordUpdate(@intCast(i * 2_000_000), 0, @intCast(i * std.time.ns_per_s));
+    }
+
+    var buf: [4096]u8 = undefined;
+    const expected_frames = [_][]const u8{
+        "\xe2\xa0\x8b", // ⠋ frame 0
+        "\xe2\xa0\x99", // ⠙ frame 1
+        "\xe2\xa0\xb9", // ⠹ frame 2
+        "\xe2\xa0\xb8", // ⠸ frame 3
+        "\xe2\xa0\xbc", // ⠼ frame 4
+        "\xe2\xa0\xb4", // ⠴ frame 5
+        "\xe2\xa0\xa6", // ⠦ frame 6
+        "\xe2\xa0\xa7", // ⠧ frame 7
+        "\xe2\xa0\x87", // ⠇ frame 8
+        "\xe2\xa0\x8f", // ⠏ frame 9
+        "\xe2\xa0\x8b", // ⠋ frame 10 wraps to 0
+    };
+
+    for (expected_frames, 0..) |expected_char, i| {
+        state.spinner_frame = @intCast(i);
+        const line = renderLine(&state, testCaps(80), 5 * std.time.ns_per_s, &buf, GradientColors.default);
+        try std.testing.expect(std.mem.indexOf(u8, line, expected_char) != null);
+    }
+}
+
+test "scenario: 100% shows spinner, percentage clamped on overshoot" {
+    var state = core.ProgrezState.init("Finalizing");
+    state.start_time_ns = 0;
+    state.last_update_ns = 0;
+    state.setDeterminate(100, 10_000_000);
+
+    for (1..6) |i| {
+        state.recordUpdate(@intCast(i * 2_000_000), @intCast(i * 20), @intCast(i * std.time.ns_per_s));
+    }
+
+    var buf: [4096]u8 = undefined;
+
+    // At 100%: spinner should appear after bar
+    const line = renderLine(&state, testCaps(120), 5 * std.time.ns_per_s, &buf, GradientColors.default);
+    try std.testing.expect(std.mem.indexOf(u8, line, "100.0%") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "2.0 MB/s") != null);
+    // Braille spinner char (⠋ = \xe2\xa0\x8b)
+    try std.testing.expect(std.mem.indexOf(u8, line, "\xe2\xa0\x8b") != null);
+
+    // Overshoot: percentage still clamped to 100.0%
+    state.recordUpdate(12_000_000, 120, 12 * std.time.ns_per_s);
+    const overshoot = renderLine(&state, testCaps(120), 12 * std.time.ns_per_s, &buf, GradientColors.default);
+    try std.testing.expect(std.mem.indexOf(u8, overshoot, "100.0%") != null);
+    // Should NOT show 120.0%
+    try std.testing.expect(std.mem.indexOf(u8, overshoot, "120.0%") == null);
+    // Spinner still present
+    try std.testing.expect(std.mem.indexOf(u8, overshoot, "\xe2\xa0\x8b") != null);
 }
