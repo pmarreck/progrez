@@ -376,6 +376,105 @@ export fn progrez_create(label: ?[*:0]const u8) ?*FfiContext {
     return ctx;
 }
 
+/// Create a progress context in manual-render mode (no render thread).
+/// The caller is responsible for calling progrez_render_line() to render.
+/// Use this for scroll-region or custom cursor-positioned rendering.
+export fn progrez_create_manual(label: ?[*:0]const u8) ?*FfiContext {
+    const alloc = ffiAllocator();
+    const ctx = alloc.create(FfiContext) catch return null;
+
+    const label_slice: []const u8 = if (label) |l| std.mem.span(l) else "Progress";
+
+    // Read env vars (same as progrez_create)
+    const style_env = getEnvVar("PROGREZ_STYLE");
+    const no_color_env = getEnvVar("NO_COLOR");
+    const colorterm_env = getEnvVar("COLORTERM");
+    const term_env = getEnvVar("TERM");
+    const wt_session_env = getEnvVar("WT_SESSION");
+    const gradient_env = getEnvVar("PROGREZ_GRADIENT");
+    const gradient = parseGradientEnv(if (gradient_env) |e| @as([]const u8, e) else null) orelse GradientColors.default;
+
+    const is_tty = std.posix.isatty(2);
+    const width: u16 = if (is_tty) getTerminalWidth() else 80;
+
+    const caps = terminal.TerminalCaps.detect(.{
+        .progrez_style = if (style_env) |e| @as([]const u8, e) else null,
+        .no_color = if (no_color_env) |e| @as([]const u8, e) else null,
+        .colorterm = if (colorterm_env) |e| @as([]const u8, e) else null,
+        .term = if (term_env) |e| @as([]const u8, e) else null,
+        .wt_session = if (wt_session_env) |e| @as([]const u8, e) else null,
+        .is_tty = is_tty,
+        .width = width,
+    });
+
+    const now_ns = std.time.nanoTimestamp();
+
+    var state = core.ProgrezState.init(label_slice);
+    state.start_time_ns = now_ns;
+    state.last_update_ns = now_ns;
+
+    const sparkline_env = getEnvVar("PROGREZ_SPARKLINE");
+    if (sparkline_env) |e| {
+        if (std.mem.eql(u8, @as([]const u8, e), "true") or std.mem.eql(u8, @as([]const u8, e), "1")) {
+            state.sparkline_enabled = true;
+        }
+    }
+
+    ctx.* = .{
+        .state = state,
+        .caps = caps,
+        .interval_ms = 100,
+        .render_thread = null, // No render thread in manual mode
+        .stop_flag = std.atomic.Value(bool).init(false),
+        .snapshot = .{
+            .files_processed = 0,
+            .files_total = null,
+            .bytes_processed = 0,
+            .bytes_total = null,
+            .timestamp_ns = now_ns,
+        },
+        .generation = std.atomic.Value(u32).init(0),
+        .progress_enabled = true,
+        .is_tty = is_tty,
+        .gradient = gradient,
+        .last_log_percent = -1,
+        .last_log_time_ns = now_ns,
+        .notify_mode = .off,
+        .notify_after_secs = 10,
+        .notify_method = .none,
+        .notify_callback = null,
+        .notify_userdata = null,
+    };
+
+    return ctx;
+}
+
+/// Render the current progress bar into a caller-provided buffer.
+/// Returns the number of bytes written (not null-terminated).
+/// For manual-render contexts (created via progrez_create_manual),
+/// this applies the latest snapshot and renders a single frame.
+export fn progrez_render_line(ctx: ?*FfiContext, buf: [*]u8, buf_size: usize, width: u16) usize {
+    const c = ctx orelse return 0;
+    if (buf_size == 0) return 0;
+
+    // Apply latest snapshot to state
+    const now_ns = std.time.nanoTimestamp();
+    if (c.snapshot.files_total) |ft| c.state.files_total = ft;
+    if (c.snapshot.bytes_total) |bt| c.state.bytes_total = bt;
+    c.state.recordUpdate(c.snapshot.bytes_processed, c.snapshot.files_processed, now_ns);
+
+    // Update width for this render
+    var caps = c.caps;
+    caps.width = width;
+
+    // Advance spinner frame
+    c.state.spinner_frame +%= 1;
+
+    // Render into caller's buffer
+    const line = render.renderLine(&c.state, caps, now_ns, buf[0..buf_size], c.gradient);
+    return line.len;
+}
+
 /// Destroy a progress context and free its memory.
 /// If the render thread is still active, finishes it first.
 export fn progrez_destroy(ctx: ?*FfiContext) void {
