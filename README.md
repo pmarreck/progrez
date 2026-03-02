@@ -75,6 +75,31 @@ progrez_set_notify_after(ctx, 30);         /* 30 second threshold */
 progrez_set_notify_callback(ctx, my_fn, userdata);  /* custom callback */
 ```
 
+## Manual Render Mode
+
+For scroll-region layouts or custom cursor positioning, use `progrez_render_line()` instead of the automatic render thread. Calling it enters manual mode — the render thread is never spawned, and you control when and where each frame is drawn.
+
+```c
+progrez_ctx *ctx = progrez_create("Processing");
+progrez_set_determinate(ctx, total_files, total_bytes);
+
+char buf[4096];
+while (working) {
+    progrez_update(ctx, files_done, bytes_done);
+    size_t len = progrez_render_line(ctx, buf, sizeof(buf), terminal_width);
+    // Write buf[0..len] wherever you want (scroll region, specific row, etc.)
+}
+
+progrez_finish(ctx);
+progrez_destroy(ctx);
+```
+
+Key differences from automatic mode:
+- No render thread — you call `progrez_render_line()` at your own cadence
+- You provide the terminal width (automatic mode detects it via ioctl)
+- `progrez_update()` still updates the data; `progrez_render_line()` reads it and renders
+- First call to `progrez_render_line()` locks in manual mode for that context
+
 ## Environment Variable Overrides
 
 | Variable | Values | Effect |

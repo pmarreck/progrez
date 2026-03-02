@@ -6,7 +6,8 @@ Provides polished, professional progress bars that take advantage of modern
 terminal features (truecolor, Unicode block elements, braille characters).
 Decouples data reporting from display rendering: callers provide data points
 at arbitrary rates, and the library renders independently on a configurable
-timer via a dedicated render thread.
+timer via a dedicated render thread. Also supports manual render mode for
+scroll-region layouts or custom cursor positioning.
 
 ## Key concepts
 
@@ -14,6 +15,11 @@ timer via a dedicated render thread.
 - **Indeterminate mode**: Unknown total — shows a braille spinner with counts
 - **Completion summary**: On finish, replaces progress bar with a persistent summary line
 - **Caller identity**: Optional tool name + context for rich completion messages
+
+## Render modes
+
+- **Automatic** (default): Render thread spawns on first `progrez_update()` and draws to stderr at the configured interval. No caller effort beyond `update`.
+- **Manual**: Calling `progrez_render_line()` enters manual mode — no thread is spawned. Caller drives rendering at their own cadence, writing the returned buffer wherever they want (scroll-region row, specific cursor position, etc.).
 
 ## Architecture
 

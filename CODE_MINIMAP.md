@@ -60,10 +60,11 @@ Internal (not pub):
 C FFI boundary layer. Bridges pure Zig core to C consumers. Manages render thread, seqlock, and I/O.
 
 - `FfiContext` — opaque context handle exposed to C as `progrez_ctx*`
-- `progrez_create(label)` — create context, read env vars, detect terminal, spawn render thread
+- `progrez_create(label)` — create context, read env vars, detect terminal (render thread deferred to first update)
 - `progrez_destroy(ctx)` — free context (finishes render thread if still active)
-- `progrez_update(ctx, files_processed, bytes_processed)` — update counters via seqlock
+- `progrez_update(ctx, files_processed, bytes_processed)` — update counters via seqlock; spawns render thread on first call (unless manual mode)
 - `progrez_finish(ctx)` — stop render thread, write completion summary to stderr
+- `progrez_render_line(ctx, buf, buf_size, width)` — render one frame into caller's buffer (enters manual mode on first call, preventing render thread)
 - `progrez_set_indeterminate(ctx)` — switch to spinner mode
 - `progrez_set_determinate(ctx, files_total, bytes_total)` — switch to bar mode with known totals
 - `progrez_set_guess(ctx, guess_files, guess_bytes)` — set estimated totals for indeterminate mode
