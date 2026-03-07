@@ -68,7 +68,7 @@ pub fn formatPercent(fraction: f64, buf: []u8) []const u8 {
     return std.fmt.bufPrint(buf, "{d:.1}%", .{pct}) catch "?";
 }
 
-/// Format seconds as ETA. < 3600 = "ETA M:SS", >= 3600 = "ETA H:MM:SS".
+/// Format seconds as ETA. < 60 = "ETA Xs", < 3600 = "ETA XmXs", >= 3600 = "ETA XhXmXs".
 pub fn formatEta(seconds: f64, buf: []u8) []const u8 {
     const total_secs: u64 = @intFromFloat(seconds);
     const h = total_secs / 3600;
@@ -76,9 +76,11 @@ pub fn formatEta(seconds: f64, buf: []u8) []const u8 {
     const s = total_secs % 60;
 
     if (h > 0) {
-        return std.fmt.bufPrint(buf, "ETA {d}:{d:0>2}:{d:0>2}", .{ h, m, s }) catch "?";
+        return std.fmt.bufPrint(buf, "ETA {d}h{d}m{d}s", .{ h, m, s }) catch "?";
+    } else if (m > 0) {
+        return std.fmt.bufPrint(buf, "ETA {d}m{d}s", .{ m, s }) catch "?";
     } else {
-        return std.fmt.bufPrint(buf, "ETA {d}:{d:0>2}", .{ m, s }) catch "?";
+        return std.fmt.bufPrint(buf, "ETA {d}s", .{s}) catch "?";
     }
 }
 
@@ -205,13 +207,13 @@ test "format: percentage" {
 
 test "format: ETA" {
     var buf: [16]u8 = undefined;
-    try std.testing.expectEqualStrings("ETA 0:05", formatEta(5.0, &buf));
-    try std.testing.expectEqualStrings("ETA 0:42", formatEta(42.0, &buf));
-    try std.testing.expectEqualStrings("ETA 1:00", formatEta(60.0, &buf));
-    try std.testing.expectEqualStrings("ETA 1:23", formatEta(83.0, &buf));
-    try std.testing.expectEqualStrings("ETA 10:00", formatEta(600.0, &buf));
-    try std.testing.expectEqualStrings("ETA 1:00:00", formatEta(3600.0, &buf));
-    try std.testing.expectEqualStrings("ETA 2:30:15", formatEta(9015.0, &buf));
+    try std.testing.expectEqualStrings("ETA 5s", formatEta(5.0, &buf));
+    try std.testing.expectEqualStrings("ETA 42s", formatEta(42.0, &buf));
+    try std.testing.expectEqualStrings("ETA 1m0s", formatEta(60.0, &buf));
+    try std.testing.expectEqualStrings("ETA 1m23s", formatEta(83.0, &buf));
+    try std.testing.expectEqualStrings("ETA 10m0s", formatEta(600.0, &buf));
+    try std.testing.expectEqualStrings("ETA 1h0m0s", formatEta(3600.0, &buf));
+    try std.testing.expectEqualStrings("ETA 2h30m15s", formatEta(9015.0, &buf));
 }
 
 test "format: elapsed time" {

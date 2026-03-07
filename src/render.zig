@@ -1381,7 +1381,7 @@ test "scenario: 50% progress at 2 MB/s shows throughput and ETA" {
     try std.testing.expect(std.mem.indexOf(u8, line, "50/100 files") != null);
     try std.testing.expect(std.mem.indexOf(u8, line, "10.0 MB/20.0 MB") != null);
     try std.testing.expect(std.mem.indexOf(u8, line, "2.0 MB/s") != null);
-    try std.testing.expect(std.mem.indexOf(u8, line, "ETA 0:05") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "ETA 5s") != null);
 }
 
 test "scenario: sparkline with varying rates" {
@@ -1409,7 +1409,7 @@ test "scenario: sparkline with varying rates" {
     try std.testing.expect(std.mem.indexOf(u8, line, "3.1 MB/s") != null);
     // Sparkline contains block elements (▁ through █)
     try std.testing.expect(std.mem.indexOf(u8, line, "\xe2\x96\x81") != null); // ▁
-    try std.testing.expect(std.mem.indexOf(u8, line, "ETA 0:03") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "ETA 3s") != null);
 }
 
 test "scenario: ETA decreases as progress advances" {
@@ -1426,7 +1426,7 @@ test "scenario: ETA decreases as progress advances" {
     const line_early = renderLine(&state, testCaps(100), 3 * std.time.ns_per_s, &buf, GradientColors.default);
     try std.testing.expect(std.mem.indexOf(u8, line_early, "30.0%") != null);
     try std.testing.expect(std.mem.indexOf(u8, line_early, "1.0 MB/s") != null);
-    try std.testing.expect(std.mem.indexOf(u8, line_early, "ETA 0:07") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line_early, "ETA 7s") != null);
 
     for (4..9) |i| {
         state.recordUpdate(@intCast(i * 1_000_000), 0, @intCast(i * std.time.ns_per_s));
@@ -1434,7 +1434,7 @@ test "scenario: ETA decreases as progress advances" {
 
     const line_late = renderLine(&state, testCaps(100), 8 * std.time.ns_per_s, &buf, GradientColors.default);
     try std.testing.expect(std.mem.indexOf(u8, line_late, "80.0%") != null);
-    try std.testing.expect(std.mem.indexOf(u8, line_late, "ETA 0:02") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line_late, "ETA 2s") != null);
 }
 
 test "scenario: log mode shows all stats" {
@@ -1450,7 +1450,7 @@ test "scenario: log mode shows all stats" {
     var buf: [4096]u8 = undefined;
     const line = renderLogLine(&state, 5 * std.time.ns_per_s, &buf);
 
-    try std.testing.expect(std.mem.indexOf(u8, line, "[progrez] Indexing 50% 250/500 files 25.0 MB/50.0 MB 5.0 MB/s ETA 0:05") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "[progrez] Indexing 50% 250/500 files 25.0 MB/50.0 MB 5.0 MB/s ETA 5s") != null);
 }
 
 test "scenario: narrow terminal drops stats progressively" {
