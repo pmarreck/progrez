@@ -1,26 +1,29 @@
 #!/usr/bin/env bash
+set -uo pipefail
+set -E
 
-MODE="ReleaseFast"
-RUN_TESTS=0
+trap 'echo "ERR at ${BASH_SOURCE[0]}:${LINENO}: $BASH_COMMAND" >&2' ERR
 
-for arg in "$@"; do
-	case "$arg" in
-		--test)
-			RUN_TESTS=1
-			;;
-		--debug)
-			MODE="Debug"
-			;;
-		*)
-			echo "Unknown argument: $arg" >&2
-			echo "Usage: ./build [--test] [--debug]" >&2
-			exit 1
-			;;
-	esac
-done
+run() {
+  "$@" || {
+    echo "FAILED: $*" >&2
+    exit 1
+  }
+}
 
-if [ "$RUN_TESTS" -eq 1 ]; then
-	exec nix develop -c zig build test "-Doptimize=${MODE}"
+optimize="ReleaseFast"
+if [[ "${1:-}" == "debug" ]]; then
+  optimize="Debug"
+  shift
 fi
 
-exec nix develop -c zig build "-Doptimize=${MODE}"
+if [[ "$optimize" != "ReleaseFast" ]]; then
+  # Non-release builds use zig directly (local dev, no need for Nix reproducibility)
+  run zig build "-Doptimize=$optimize" "$@"
+elif command -v nix >/dev/null 2>&1; then
+  run nix build "$@"
+  mkdir -p zig-out/bin
+  run install -m755 result/bin/* zig-out/bin/
+else
+  run zig build "-Doptimize=$optimize" "$@"
+fi
