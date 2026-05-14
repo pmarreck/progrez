@@ -15,13 +15,25 @@ fn ffiAllocator() std.mem.Allocator {
 }
 
 /// Cross-platform stderr file handle.
-fn stderrFile() std.fs.File {
-    return std.fs.File.stderr();
+fn stderrFile() std.Io.File {
+    return std.Io.File.stderr();
+}
+
+fn progrezIo() std.Io {
+    return std.Io.Threaded.global_single_threaded.io();
+}
+
+/// Write bytes to an `std.Io.File` (0.16 needs a writer + flush).
+fn writeAllToFile(file: std.Io.File, data: []const u8) !void {
+    var buf: [4096]u8 = undefined;
+    var w = file.writer(progrezIo(), &buf);
+    try w.interface.writeAll(data);
+    try w.interface.flush();
 }
 
 /// Cross-platform isatty check for stderr.
 fn stderrIsAtty() bool {
-    return stderrFile().isTty();
+    return stderrFile().isTty(progrezIo()) catch false;
 }
 
 /// Opaque context handle exposed to C as `progrez_ctx*`.
@@ -127,15 +139,26 @@ fn detectNotifyMethod() NotifyMethod {
         return .osascript;
     } else if (comptime builtin.os.tag == .linux) {
         // Check if notify-send exists by trying to run "which notify-send"
-        var child = std.process.Child.init(&.{ "which", "notify-send" }, ffiAllocator());
-        child.stdout_behavior = .Ignore;
-        child.stderr_behavior = .Ignore;
-        const term = child.spawnAndWait() catch return .bell;
-        if (term == .Exited and term.Exited == 0) return .notify_send;
+        const result = std.process.run(ffiAllocator(), progrezIo(), .{
+            .argv = &.{ "which", "notify-send" },
+        }) catch return .bell;
+        defer ffiAllocator().free(result.stdout);
+        defer ffiAllocator().free(result.stderr);
+        switch (result.term) {
+            .Exited => |code| if (code == 0) return .notify_send,
+            else => {},
+        }
         return .bell;
     } else {
         return .bell;
     }
+}
+
+/// Run a command, ignoring stdout/stderr (best-effort).
+fn spawnAndIgnore(alloc: std.mem.Allocator, argv: []const []const u8) void {
+    const result = std.process.run(alloc, progrezIo(), .{ .argv = argv }) catch return;
+    alloc.free(result.stdout);
+    alloc.free(result.stderr);
 }
 
 /// Send a system notification.
@@ -159,20 +182,14 @@ fn sendNotification(method: NotifyMethod, message: []const u8, alloc: std.mem.Al
             }
             var script_buf: [1200]u8 = undefined;
             const script = std.fmt.bufPrint(&script_buf, "display notification \"{s}\" with title \"progrez\"", .{escaped_buf[0..escaped_len]}) catch return;
-            var child = std.process.Child.init(&.{ "osascript", "-e", script }, alloc);
-            child.stdout_behavior = .Ignore;
-            child.stderr_behavior = .Ignore;
-            _ = child.spawnAndWait() catch {};
+            spawnAndIgnore(alloc, &.{ "osascript", "-e", script });
         },
         .notify_send => {
-            var child = std.process.Child.init(&.{ "notify-send", "progrez", message }, alloc);
-            child.stdout_behavior = .Ignore;
-            child.stderr_behavior = .Ignore;
-            _ = child.spawnAndWait() catch {};
+            spawnAndIgnore(alloc, &.{ "notify-send", "progrez", message });
         },
         .bell => {
             const stderr_file = stderrFile();
-            stderr_file.writeAll("\x07") catch {};
+            writeAllToFile(stderr_file, "\x07") catch {};
         },
         .none => {},
     }
@@ -181,11 +198,12 @@ fn sendNotification(method: NotifyMethod, message: []const u8, alloc: std.mem.Al
 /// Read an environment variable. Returns null if not set.
 fn getEnvVar(name: [:0]const u8) ?[:0]const u8 {
     if (comptime builtin.os.tag == .windows) {
-        // std.posix.getenv unavailable on Windows (WTF-16 env strings).
+        // std.c.getenv unavailable on Windows (WTF-16 env strings).
         // For now, skip env-var reading on Windows; features degrade gracefully.
         return null;
     } else {
-        return std.posix.getenv(name);
+        const c_val = std.c.getenv(name.ptr) orelse return null;
+        return std.mem.span(c_val);
     }
 }
 
@@ -243,7 +261,7 @@ fn renderLoop(ctx: *FfiContext) void {
 
     while (!ctx.stop_flag.load(.acquire)) {
         // Sleep for the configured interval
-        std.Thread.sleep(@as(u64, ctx.interval_ms) * std.time.ns_per_ms);
+        std.Io.sleep(progrezIo(), .fromMilliseconds(@intCast(ctx.interval_ms)), .awake) catch {};
 
         if (ctx.stop_flag.load(.acquire)) break;
 
@@ -270,8 +288,8 @@ fn renderLoop(ctx: *FfiContext) void {
             const line = render.renderLine(&ctx.state, ctx.caps, now_ns, &render_buf, ctx.gradient);
             if (line.len > 0) {
                 const stderr_file = stderrFile();
-                stderr_file.writeAll("\r") catch {};
-                stderr_file.writeAll(line) catch {};
+                writeAllToFile(stderr_file, "\r") catch {};
+                writeAllToFile(stderr_file, line) catch {};
             }
         } else {
             // Log mode: emit line every 10s or 10% progress
@@ -279,7 +297,7 @@ fn renderLoop(ctx: *FfiContext) void {
                 const line = render.renderLogLine(&ctx.state, now_ns, &render_buf);
                 if (line.len > 0) {
                     const stderr_file = stderrFile();
-                    stderr_file.writeAll(line) catch {};
+                    writeAllToFile(stderr_file, line) catch {};
                 }
             }
         }
@@ -333,7 +351,7 @@ export fn progrez_create(label: ?[*:0]const u8) ?*FfiContext {
     // PROGRESS env var overrides TTY check
     const progress_enabled = parseProgressEnv(if (progress_env) |e| @as([]const u8, e) else null) orelse is_tty;
 
-    const now_ns = std.time.nanoTimestamp();
+    const now_ns = std.Io.Clock.Timestamp.now(progrezIo(), .awake).raw.toNanoseconds();
 
     // Initialize state
     var state = core.ProgrezState.init(label_slice);
@@ -404,7 +422,7 @@ export fn progrez_render_line(ctx: ?*FfiContext, buf: [*]u8, buf_size: usize, wi
     }
 
     // Apply latest snapshot to state
-    const now_ns = std.time.nanoTimestamp();
+    const now_ns = std.Io.Clock.Timestamp.now(progrezIo(), .awake).raw.toNanoseconds();
     if (c.snapshot.files_total) |ft| c.state.files_total = ft;
     if (c.snapshot.bytes_total) |bt| c.state.bytes_total = bt;
     c.state.recordUpdate(c.snapshot.bytes_processed, c.snapshot.files_processed, now_ns);
@@ -437,7 +455,7 @@ export fn progrez_destroy(ctx: ?*FfiContext) void {
 /// On first call, spawns the render thread (unless manual_mode is active).
 export fn progrez_update(ctx: ?*FfiContext, files_processed: u64, bytes_processed: u64) void {
     const c = ctx orelse return;
-    const now_ns = std.time.nanoTimestamp();
+    const now_ns = std.Io.Clock.Timestamp.now(progrezIo(), .awake).raw.toNanoseconds();
 
     // Lazily spawn render thread on first update
     if (c.render_thread == null and c.progress_enabled and !c.manual_mode) {
@@ -480,16 +498,16 @@ export fn progrez_finish(ctx: ?*FfiContext) void {
 
     // Write completion summary to stderr
     if (c.progress_enabled) {
-        const now_ns = std.time.nanoTimestamp();
+        const now_ns = std.Io.Clock.Timestamp.now(progrezIo(), .awake).raw.toNanoseconds();
         var summary_buf: [1024]u8 = undefined;
         const summary = render.renderCompletionSummary(&c.state, now_ns, &summary_buf);
         if (summary.len > 0) {
             const stderr_file = stderrFile();
             if (c.is_tty) {
                 // Clear the progress line first
-                stderr_file.writeAll("\r\x1b[2K") catch {};
+                writeAllToFile(stderr_file, "\r\x1b[2K") catch {};
             }
-            stderr_file.writeAll(summary) catch {};
+            writeAllToFile(stderr_file, summary) catch {};
         }
 
         // Send notification if enabled and elapsed time exceeds threshold
@@ -504,7 +522,7 @@ export fn progrez_finish(ctx: ?*FfiContext) void {
             if (c.notify_callback) |cb| {
                 // Use callback if registered
                 const notify_msg = render.renderCompletionSummary(&c.state, now_ns, &summary_buf);
-                const msg_trimmed = std.mem.trimRight(u8, notify_msg, "\n");
+                const msg_trimmed = std.mem.trimEnd(u8, notify_msg, "\n");
                 var c_str_buf: [512]u8 = undefined;
                 if (msg_trimmed.len < c_str_buf.len) {
                     @memcpy(c_str_buf[0..msg_trimmed.len], msg_trimmed);
@@ -513,7 +531,7 @@ export fn progrez_finish(ctx: ?*FfiContext) void {
                 }
             } else if (c.notify_method != .none) {
                 const notify_msg = render.renderCompletionSummary(&c.state, now_ns, &summary_buf);
-                const msg_trimmed = std.mem.trimRight(u8, notify_msg, "\n");
+                const msg_trimmed = std.mem.trimEnd(u8, notify_msg, "\n");
                 sendNotification(c.notify_method, msg_trimmed, ffiAllocator());
             }
         }

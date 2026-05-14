@@ -70,7 +70,7 @@ pub fn build(b: *std.Build) void {
         .flags = &.{ "-std=c11", "-Wall", "-Wextra", "-Wpedantic" },
     });
     demo.root_module.addIncludePath(b.path("include"));
-    demo.linkLibrary(lib);
+    demo.root_module.linkLibrary(lib);
     b.installArtifact(demo);
 
     // Demo run step
