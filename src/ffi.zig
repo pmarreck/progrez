@@ -145,7 +145,7 @@ fn detectNotifyMethod() NotifyMethod {
         defer ffiAllocator().free(result.stdout);
         defer ffiAllocator().free(result.stderr);
         switch (result.term) {
-            .Exited => |code| if (code == 0) return .notify_send,
+            .exited => |code| if (code == 0) return .notify_send,
             else => {},
         }
         return .bell;
