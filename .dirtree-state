@@ -1,0 +1,8 @@
+# Dirtree: Stateful directory trees in the CLI for humans and LLMs. https://github.com/pmarreck/dirtree
+ver=1.2
+annotate=[
+	MISTAKES.md = Agent workflow mistakes and prevention notes.
+	README.md = Public usage, build, and reproducibility policy.
+	tests/reproducibility/check_package_reproducibility = MFIC package gate rejects host ISA and randomized build-root leakage.
+	tests/reproducibility/test_package_classifier = Mutation corpus sweeps every package artifact for ISA and build-root classifier omissions.
+]

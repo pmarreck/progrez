@@ -118,15 +118,21 @@ Standard terminal variables (`COLORTERM`, `TERM`, `WT_SESSION`) are also read fo
 ## Building
 
 ```bash
-# Build (requires Nix with flakes)
-nix develop -c zig build
+# Reproducible ReleaseFast package (requires Nix with flakes)
+./build
 
-# Run tests
-nix develop -c zig build test
+# Run the complete unit and CLI suite
+./test
 
 # Run the demo
 nix develop -c ./zig-out/bin/progrez-demo
 ```
+
+Nix release builds pin Zig code generation to the portable CPU baseline rather
+than the build host's native instruction set. Release static archives also omit
+DWARF build paths. On x86-64 Linux, `nix flake check` disassembles the complete
+package instruction set and rejects host-specific ISA or embedded `/build/`
+paths, keeping cache artifacts reproducible across CI machines.
 
 ## License
 

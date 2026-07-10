@@ -4,6 +4,17 @@ See `docs/plans/2026-02-27-progrez-implementation.md` for detailed plan.
 
 ## Status
 
+## Mechatron Prime reproducibility repair (2026-07-10)
+
+- [x] Add a package-level control that rejects host-native x86 ISA output and randomized build-root leaks. (2026-07-10 13:19 EDT)
+  - Curiosity poke: scan complete emitted instruction/path sets so one missing example cannot make the control vacuous.
+- [x] Pin package and test code generation to a portable CPU baseline. (2026-07-10 13:19 EDT)
+  - Curiosity poke: keep optimization at ReleaseFast; portability must not silently become a Debug or unoptimized build.
+- [x] Prove two clean package builds are byte-identical and run the full test/build/flake gates. (2026-07-10 13:19 EDT)
+  - Curiosity poke: compare recursive NAR hashes, not only filenames or one executable.
+- [x] Sweep every package artifact with deterministic ISA/path mutations and close classifier omissions. (2026-07-10 13:31 EDT)
+  - Curiosity poke: require a clean specificity fixture so the gate cannot pass by rejecting every package.
+
 - [x] Task 1: Project Scaffolding (2026-02-27)
 - [x] Task 2: Core Data Model (2026-02-27)
 - [x] Task 3: Unit Formatting (2026-02-27)

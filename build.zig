@@ -14,6 +14,9 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .link_libc = true,
+        // Release archives otherwise retain Zig's randomized cache path in
+        // DWARF line tables, making identical Nix derivations differ by host.
+        .strip = optimize != .Debug,
     });
 
     const lib = b.addLibrary(.{

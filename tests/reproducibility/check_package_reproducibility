@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+
+set -u
+
+if [ "$#" -ne 2 ]; then
+	printf 'usage: %s PACKAGE_PATH OBJDUMP\n' "$0" >&2
+	exit 2
+fi
+
+package_path="$1"
+objdump_bin="$2"
+strings_bin="${objdump_bin%/objdump}/strings"
+
+artifacts=(
+	"$package_path/bin/progrez-demo"
+	"$package_path/lib/libprogrez_shared.so"
+	"$package_path/lib/libprogrez.a"
+)
+
+missing=0
+for artifact in "${artifacts[@]}"; do
+	if [ ! -f "$artifact" ]; then
+		printf 'missing package artifact: %s\n' "$artifact" >&2
+		missing=$((missing + 1))
+	fi
+done
+
+if [ "$missing" -ne 0 ]; then
+	exit 1
+fi
+
+# Classify the complete instruction set, rather than checking one hand-picked
+# opcode. Any VEX/EVEX instruction proves the artifact exceeded x86-64 baseline.
+instruction_set="$({
+	for artifact in "${artifacts[@]}"; do
+		"$objdump_bin" -d --no-show-raw-insn "$artifact"
+	done
+} | awk '/^[[:space:]]*[0-9a-f]+:/ { print $2 }' | sort -u)"
+
+forbidden="$({
+	printf '%s\n' "$instruction_set" | awk '
+		/^v/ ||
+		/^(andn|bextr|blsi|blsmsk|blsr|bzhi|lzcnt|mulx|pdep|pext|popcnt|sarx|shlx|shrx)$/ ||
+		/^(aesdec|aesdeclast|aesenc|aesenclast|aesimc|aeskeygenassist|pclmulqdq)$/
+	'
+} )"
+
+if [ -n "$forbidden" ]; then
+	printf 'package contains host-specific x86 instructions:\n%s\n' "$forbidden" >&2
+	exit 1
+fi
+
+# Zig artifacts can retain randomized /build/tmp.* debug paths even after Nix
+# fixup. Classify the complete package string set so this cannot be hidden in a
+# different artifact or by changing one known temporary-directory name.
+build_root_leaks="$({
+	for artifact in "${artifacts[@]}"; do
+		"$strings_bin" -a "$artifact"
+	done
+} | awk '/^\/build\//' | sort -u)"
+if [ -n "$build_root_leaks" ]; then
+	printf 'package contains non-reproducible build-root paths:\n%s\n' "$build_root_leaks" >&2
+	exit 1
+fi

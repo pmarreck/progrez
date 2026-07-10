@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+
+set -u
+
+if [ "$#" -ne 5 ]; then
+	printf 'usage: %s CLASSIFIER BASH AS AR OBJDUMP\n' "$0" >&2
+	exit 2
+fi
+
+classifier="$1"
+bash_bin="$2"
+as_bin="$3"
+ar_bin="$4"
+objdump_bin="$5"
+
+work="$(mktemp -d "${TMPDIR:-/tmp}/progrez-classifier.XXXXXXXXXX")"
+trap 'rm -rf -- "$work"' EXIT
+failures=0
+
+make_object() {
+	local kind="$1"
+	local output="$2"
+	local source
+
+	case "$kind" in
+		baseline)
+			source=$'.text\n.globl synthetic\nsynthetic:\n\tret'
+			;;
+		avx)
+			source=$'.text\n.globl synthetic\nsynthetic:\n\tvzeroupper\n\tret'
+			;;
+		build-root)
+			source=$'.text\n.globl synthetic\nsynthetic:\n\tret\n.section .rodata\n.asciz "/build/synthetic-fixture"'
+			;;
+		*)
+			printf 'unknown synthetic object kind: %s\n' "$kind" >&2
+			return 1
+			;;
+	esac
+
+	if ! printf '%s\n' "$source" | "$as_bin" --64 -o "$output"; then
+		printf 'failed to assemble synthetic %s object\n' "$kind" >&2
+		return 1
+	fi
+}
+
+make_package() {
+	local name="$1"
+	local demo_kind="$2"
+	local shared_kind="$3"
+	local archive_kind="$4"
+	local package="$work/$name"
+
+	if ! mkdir -p "$package/bin" "$package/lib"; then
+		return 1
+	fi
+	if ! make_object "$demo_kind" "$package/bin/progrez-demo"; then
+		return 1
+	fi
+	if ! make_object "$shared_kind" "$package/lib/libprogrez_shared.so"; then
+		return 1
+	fi
+	if ! make_object "$archive_kind" "$work/$name-static.o"; then
+		return 1
+	fi
+	if ! "$ar_bin" crD "$package/lib/libprogrez.a" "$work/$name-static.o"; then
+		printf 'failed to create synthetic archive for %s\n' "$name" >&2
+		return 1
+	fi
+
+	package_result="$package"
+}
+
+run_case() {
+	local name="$1"
+	local expected="$2"
+	local expected_error="$3"
+	local demo_kind="$4"
+	local shared_kind="$5"
+	local archive_kind="$6"
+	local error_output
+	local rc
+
+	if ! make_package "$name" "$demo_kind" "$shared_kind" "$archive_kind"; then
+		failures=$((failures + 1))
+		return
+	fi
+
+	"$bash_bin" "$classifier" "$package_result" "$objdump_bin" \
+		>"$work/$name.stdout" 2>"$work/$name.stderr"
+	rc=$?
+	error_output="$(<"$work/$name.stderr")"
+
+	if [ "$expected" = accept ]; then
+		if [ "$rc" -ne 0 ]; then
+			printf 'clean synthetic package was rejected:\n%s\n' "$error_output" >&2
+			failures=$((failures + 1))
+		fi
+		return
+	fi
+
+	if [ "$rc" -eq 0 ]; then
+		printf 'classifier falsely accepted mutation: %s\n' "$name" >&2
+		failures=$((failures + 1))
+	elif [[ "$error_output" != *"$expected_error"* ]]; then
+		printf 'classifier rejected %s for the wrong reason:\n%s\n' "$name" "$error_output" >&2
+		failures=$((failures + 1))
+	fi
+}
+
+# Specificity control plus a mechanical sweep of both mutation classes over
+# every shipped artifact. This prevents a reject-everything gate and omissions.
+run_case clean accept '' baseline baseline baseline
+run_case demo-avx reject 'host-specific x86 instructions' avx baseline baseline
+run_case shared-avx reject 'host-specific x86 instructions' baseline avx baseline
+run_case archive-avx reject 'host-specific x86 instructions' baseline baseline avx
+run_case demo-build-root reject 'build-root paths' build-root baseline baseline
+run_case shared-build-root reject 'build-root paths' baseline build-root baseline
+run_case archive-build-root reject 'build-root paths' baseline baseline build-root
+
+if [ "$failures" -ne 0 ]; then
+	exit "$failures"
+fi
